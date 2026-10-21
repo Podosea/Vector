@@ -24,9 +24,9 @@ import org.matrix.vector.daemon.R
 import org.matrix.vector.daemon.data.FileSystem
 import org.matrix.vector.daemon.utils.FakeContext
 
-private const val TAG = "VectorNotificationManager"
-private const val STATUS_CHANNEL_ID = "vector_status"
-private const val UPDATED_CHANNEL_ID = "vector_module_updated"
+private const val TAG = "CoreNotificationManager"
+private const val STATUS_CHANNEL_ID = "leaf_status"
+private const val UPDATED_CHANNEL_ID = "leaf_module_updated"
 private const val STATUS_NOTIF_ID = BuildConfig.MANAGER_INJECTED_UID
 
 /**
@@ -60,7 +60,7 @@ object NotificationManager {
   val openManagerAction = UUID.randomUUID().toString()
   val moduleScopeAction = UUID.randomUUID().toString()
 
-  val SCOPE_CHANNEL_ID = "vector_module_scope"
+  val SCOPE_CHANNEL_ID = "leaf_module_scope"
 
   private val nm: android.app.INotificationManager? by
       SystemService(
