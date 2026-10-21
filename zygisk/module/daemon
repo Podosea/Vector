@@ -37,10 +37,10 @@ if [ ! -S "/dev/socket/zygote" ]; then
     sleep 0.1
     wait_count=$((wait_count + 1))
   done
-  [ "$debug" = "true" ] && log -p v -t "Vector" "zygote started"
+  [ "$debug" = "true" ] && log -p v -t "LeafCore" "zygote started"
 fi
 
-[ "$debug" = "true" ] && log -p d -t "Vector" "Starting daemon $*"
+[ "$debug" = "true" ] && log -p d -t "LeafCore" "Starting daemon $*"
 
 # Launch the daemon
-exec /system/bin/app_process $java_options /system/bin --nice-name=vectord org.matrix.vector.daemon.VectorDaemon "$@" >/dev/null 2>&1
+exec /system/bin/app_process $java_options /system/bin --nice-name=leafd org.matrix.vector.daemon.VectorDaemon "$@" >/dev/null 2>&1
