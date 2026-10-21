@@ -1,19 +1,19 @@
 # Legacy Xposed API Implementation
 
-This document details the architecture and implementation of the `legacy` module within the Vector framework. The `legacy` subsystem provides a backward-compatibility layer, implementing the classic `de.robv.android.xposed` API namespace while routing execution to the modern native ART hooking engine.
+This document details the architecture and implementation of the `legacy` module within the Leaf framework. The `legacy` subsystem provides a backward-compatibility layer, implementing the classic `de.robv.android.xposed` API namespace while routing execution to the modern native ART hooking engine.
 
 ## Module Topology and Boundaries
 
 The legacy compatibility subsystem spans multiple compilation boundaries to enforce strict separation between the API surface, the Dalvik/ART runtime, and the native execution environment.
 
 - [legacy](.): Contains the Java API surface (`de.robv.android.xposed.*`), state translation handlers (`LegacyDelegateImpl`), reflection caching mechanisms, and resource/shared preference overrides.
-- [xposed](../xposed): Manages the isolated classloaders (`VectorModuleClassLoader`), the Ahead-Of-Time (AOT) compiler deoptimizer (`VectorDeopter`), and the Dependency Injection (DI) framework.
+- [xposed](../xposed): Manages the isolated classloaders (`LeafModuleClassLoader`), the Ahead-Of-Time (AOT) compiler deoptimizer (`LeafDeopter`), and the Dependency Injection (DI) framework.
 - [native](../native): Houses the JNI bridges (`hook_bridge.cpp`, `resources_hook.cpp`), concurrent hook registries, stack-allocated invocation logic, in-memory DEX generation, and binary XML mutation routines.
 - [daemon](../daemon): Operates out-of-process with elevated privileges to provision SELinux-permissive directories and manage filesystem contexts for cross-process file sharing.
 
 ### Dependency Injection and Bootstrap
 
-During process startup, `Startup.initXposed` is invoked in the `zygisk` module. This routine establishes the DI (Dependency Injection) contract by instantiating `LegacyDelegateImpl` and injecting it into the `xposed` module via `VectorBootstrap.INSTANCE.init()`.
+During process startup, `Startup.initXposed` is invoked in the `zygisk` module. This routine establishes the DI (Dependency Injection) contract by instantiating `LegacyDelegateImpl` and injecting it into the `xposed` module via `LeafBootstrap.INSTANCE.init()`.
 
 The `LegacyDelegateImpl` satisfies the `LegacyFrameworkDelegate` interface, acting as the sole translation boundary for:
 
@@ -24,13 +24,13 @@ The `LegacyDelegateImpl` satisfies the `LegacyFrameworkDelegate` interface, acti
 
 ## Module Initialization
 
-Legacy modules are loaded during the initialization phase via `XposedInit.loadLegacyModules()`. The framework queries the daemon (`VectorServiceClient.INSTANCE.getLegacyModules()`) to retrieve the list of enabled APK paths.
+Legacy modules are loaded during the initialization phase via `XposedInit.loadLegacyModules()`. The framework queries the daemon (`LeafServiceClient.INSTANCE.getLegacyModules()`) to retrieve the list of enabled APK paths.
 
-Modules are not loaded using standard Android mechanism. To prevent detection via `ClassLoader.getParent()` chain-walking and to eliminate residual file descriptors, `XposedInit.loadModule` utilizes `VectorModuleClassLoader`. This classloader loads the module APK directly into memory, isolating the module's execution environment from the host application's classpath.
+Modules are not loaded using standard Android mechanism. To prevent detection via `ClassLoader.getParent()` chain-walking and to eliminate residual file descriptors, `XposedInit.loadModule` utilizes `LeafModuleClassLoader`. This classloader loads the module APK directly into memory, isolating the module's execution environment from the host application's classpath.
 
 Once mapped into memory, the framework parses two specific manifest files within the APK to initialize Java and native execution hooks:
 
-1. `assets/xposed_init`: Defines the Java entrypoint class, which is loaded via `VectorModuleClassLoader` and inspected for `IXposedMod` implementations to be registered with the internal callback arrays:
+1. `assets/xposed_init`: Defines the Java entrypoint class, which is loaded via `LeafModuleClassLoader` and inspected for `IXposedMod` implementations to be registered with the internal callback arrays:
     - `IXposedHookZygoteInit`: Invoked immediately with a `StartupParam` structure containing the module path and system server status.
     - `IXposedHookLoadPackage`: Wrapped in `IXposedHookLoadPackage.Wrapper` and appended to the `XposedBridge.sLoadedPackageCallbacks` array.
     - `IXposedHookInitPackageResources`: Appended to `XposedBridge.sInitPackageResourcesCallbacks` array, which subsequently triggers the native resource hooking subsystem via `XposedInit.hookResources()`.
@@ -57,7 +57,7 @@ Legacy modules rely heavily on reflection to locate target methods and fields (e
 
 Modern Android Runtime (ART) environments utilize Ahead-Of-Time (AOT) compilation, which frequently inlines short methods into their callers. If an inlined method is hooked, the JNI trampoline will be bypassed because the caller executes the inlined machine code directly.
 
-To mitigate this, the `xposed` module implements `VectorDeopter`. During initialization or application load, `VectorDeopter.deoptMethods()` queries a registry of known inlined methods [VectorInlinedCallers](../xposed/src/main/kotlin/org/matrix/vector/impl/core/VectorInlinedCallers.kt). It iterates through these targets and issues a native command (`HookBridge.deoptimizeMethod`) to force ART to discard the compiled machine code for the target. This forces the method execution back into the ART interpreter (via `ClassLinker::SetEntryPointsToInterpreter` in `lsplant`), which strictly respects method boundaries and guarantees execution of the installed JNI trampolines.
+To mitigate this, the `xposed` module implements `LeafDeopter`. During initialization or application load, `LeafDeopter.deoptMethods()` queries a registry of known inlined methods [LeafInlinedCallers](../xposed/src/main/kotlin/io/leafcore/impl/core/LeafInlinedCallers.kt). It iterates through these targets and issues a native command (`HookBridge.deoptimizeMethod`) to force ART to discard the compiled machine code for the target. This forces the method execution back into the ART interpreter (via `ClassLinker::SetEntryPointsToInterpreter` in `lsplant`), which strictly respects method boundaries and guarantees execution of the installed JNI trampolines.
 
 ### Native Hook Registry and Execution State Translation
 
@@ -112,10 +112,10 @@ The `daemon` module operates with elevated privileges and provisions a specializ
 
 ### Interception and Redirection
 
-To utilize the safe-zone transparently, the `legacy` module intercepts the configuration saving mechanics within the module's own user interface process. During application load, `LegacyDelegateImpl` parses the module's APK metadata using `VectorMetaDataReader`. If the module declares an `xposedminversion` greater than 92 or contains the `xposedsharedprefs` flag, the framework triggers `hookNewXSP`. This routine applies two critical hooks to `android.app.ContextImpl`:
+To utilize the safe-zone transparently, the `legacy` module intercepts the configuration saving mechanics within the module's own user interface process. During application load, `LegacyDelegateImpl` parses the module's APK metadata using `LeafMetaDataReader`. If the module declares an `xposedminversion` greater than 92 or contains the `xposedsharedprefs` flag, the framework triggers `hookNewXSP`. This routine applies two critical hooks to `android.app.ContextImpl`:
 
 1.  Flag Stripping: It hooks `checkMode` to intercept the mode integer. If the `MODE_WORLD_READABLE` bit is present, it suppresses the resulting `SecurityException` by setting the hook throwable to null.
-2.  Path Redirection: It hooks `getPreferencesDir` using an `XC_MethodReplacement`. Instead of returning the standard isolated data directory, it returns the daemon-provisioned safe-zone path obtained via `VectorServiceClient.INSTANCE.getPrefsPath`.
+2.  Path Redirection: It hooks `getPreferencesDir` using an `XC_MethodReplacement`. Instead of returning the standard isolated data directory, it returns the daemon-provisioned safe-zone path obtained via `LeafServiceClient.INSTANCE.getPrefsPath`.
 
 When the module attempts to save its standard `SharedPreferences`, the Android framework transparently writes the XML file into the SELinux-permissive bridge.
 
@@ -123,7 +123,7 @@ When the module attempts to save its standard `SharedPreferences`, the Android f
 
 When a target application is hooked and instantiates `XSharedPreferences`, the framework determines the path based on the target API level. For modern modules, it bypasses the legacy `/data/data` path entirely and maps directly to the safe-zone.
 
-In the original [Xposed framework](https://github.com/rovo89/XposedBridge), circumventing SELinux at read-time required synchronous IPC via BinderService or native root access via ZygoteService. In the Vector framework, these IPC mechanisms have been removed. Because the daemon pre-emptively assigns a permissive SELinux context to the safe-zone, the target application process possesses the necessary permissions to read the file directly. The SELinuxHelper component unconditionally returns DirectAccessService, an implementation of BaseService. This service acts purely as a structural API shim to maintain compatibility with the internal caching logic of XSharedPreferences, performing raw reads utilizing standard `FileInputStream` and `BufferedInputStream` operations without IPC overhead.
+In the original [Xposed framework](https://github.com/rovo89/XposedBridge), circumventing SELinux at read-time required synchronous IPC via BinderService or native root access via ZygoteService. In the Leaf framework, these IPC mechanisms have been removed. Because the daemon pre-emptively assigns a permissive SELinux context to the safe-zone, the target application process possesses the necessary permissions to read the file directly. The SELinuxHelper component unconditionally returns DirectAccessService, an implementation of BaseService. This service acts purely as a structural API shim to maintain compatibility with the internal caching logic of XSharedPreferences, performing raw reads utilizing standard `FileInputStream` and `BufferedInputStream` operations without IPC overhead.
 
 Since standard Android inter-process communication mechanisms (such as broadcast intents or content providers) are overly visible for cross-process preference tracking, `XSharedPreferences` implements an in-process filesystem watcher to handle live updates. When an `OnSharedPreferenceChangeListener` is registered, the framework spawns an internal daemon thread (`sWatcherDaemon`). This thread utilizes `java.nio.file.WatchService` (an abstraction over the Linux `inotify` subsystem) to monitor the safe-zone directory. The thread blocks on `sWatcher.take()`, and upon receiving an `ENTRY_MODIFY` or `ENTRY_DELETE` event for the target XML file, it validates the file hash and natively dispatches the legacy preference change callbacks to the registered listeners.
 

@@ -12,8 +12,8 @@ android {
         }
     }
 
-    aidlPackagedList += "org/matrix/vector/ipc/LoadedModule.aidl"
-    namespace = "org.matrix.vector.daemonservice"
+    aidlPackagedList += "io/leafcore/ipc/LoadedModule.aidl"
+    namespace = "io.leafcore.daemonservice"
 }
 
 dependencies {

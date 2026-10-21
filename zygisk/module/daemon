@@ -43,4 +43,4 @@ fi
 [ "$debug" = "true" ] && log -p d -t "LeafCore" "Starting daemon $*"
 
 # Launch the daemon
-exec /system/bin/app_process $java_options /system/bin --nice-name=leafd org.matrix.vector.daemon.VectorDaemon "$@" >/dev/null 2>&1
+exec /system/bin/app_process $java_options /system/bin --nice-name=leafd io.leafcore.daemon.LeafDaemon "$@" >/dev/null 2>&1

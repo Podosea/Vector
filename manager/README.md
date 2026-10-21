@@ -1,4 +1,4 @@
-# Vector Manager
+# Leaf Manager
 
 The manager app: Jetpack Compose, one activity, configuring the root daemon over Binder. It holds
 no privilege of its own — everything it does to the device, it asks the daemon to do. It replaces
@@ -41,7 +41,7 @@ with whatever they managed to fetch before there was a daemon.
 
 `ipc/DaemonClient` wraps every AIDL call in `runIpc`, which moves it to `Dispatchers.IO` and returns
 a `Result`. The interface is
-`services/manager-service/src/main/aidl/org/matrix/vector/ipc/IManagerService.aidl`, and it is the
+`services/manager-service/src/main/aidl/io/leafcore/ipc/IManagerService.aidl`, and it is the
 source of truth for what each call means: read the method's documentation there before calling it.
 
 Two properties of Binder shape most of the mistakes made here, and the AIDL spells out what each
@@ -57,7 +57,7 @@ daemon's asynchronous cache while the write went to its database.
 ## Logging
 
 Log under `Constants.TAG`, and only under it. `daemon/src/main/jni/logcat.cpp` routes any tag
-beginning `Vector` into the daemon's verbose stream, so those lines reach the Logs screen and travel
+beginning `Leaf` into the daemon's verbose stream, so those lines reach the Logs screen and travel
 in the zip export a user attaches to a report. A file-local tag is ordinary Android practice and
 would land nowhere. The conventions — prefixes, levels, what never belongs in a message — are on
 `Constants.TAG` itself.
@@ -89,7 +89,7 @@ asserting the old meaning until someone notices, which can be a long time.
 The version code is `git rev-list --count refs/remotes/origin/master`, so a branch build and a
 master build can share one; `module.prop` and the status page carry a build stamp, which is often
 the only way to tell two builds apart on a device. It names where the build came from as well as
-what it was built from. The commit leads and what follows says where: `93d66473-JingMatrix-Vector`
+what it was built from. The commit leads and what follows says where: `93d66473-owner-repo`
 for a CI build, the bare `93d66473` for a local one, and `93d66473+thinkpad` — the machine that made
 it — when the tree was not clean.
 
@@ -98,7 +98,7 @@ Debug builds add a second launcher activity — a demo mode with scripted device
 framework. It does mean `monkey -c LAUNCHER` picks one of the two at random:
 
 ```sh
-adb shell am start -n org.matrix.vector.manager/.ui.MainActivity
+adb shell am start -n io.leafcore.manager/.ui.MainActivity
 ```
 
 There is no test source set anywhere in this repository, and CI runs `zipAll` and nothing else. A

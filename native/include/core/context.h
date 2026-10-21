@@ -11,7 +11,7 @@
 
 /**
  * @file context.h
- * @brief Defines the core runtime context for the Vector native environment.
+ * @brief Defines the core runtime context for the Leaf native environment.
  *
  * The Context class is a singleton that holds essential runtime information, such as
  * the injected class loader, and provides core functionalities like class finding and DEX loading.
@@ -62,7 +62,7 @@ public:
      * @brief Finds a class using the framework's injected class loader.
      *
      * This is the primary method for looking up classes that are part of the
-     * Vector framework's Java components.
+     * Leaf framework's Java components.
      *
      * @param env The JNI environment.
      * @param class_name The fully qualified name of the class to find (dot-separated).

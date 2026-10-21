@@ -78,7 +78,7 @@ abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParamete
  * The separator says which kind of "where" follows, because they mean opposite things about whether
  * the commit describes the binary:
  *
- * *On GitHub Actions*, `93d66473-JingMatrix-Vector` — the commit, then the repository the code came
+ * *On GitHub Actions*, `93d66473-owner-repo` — the commit, then the repository the code came
  * from. Forks build the same code from the same commits, so the hash alone identifies a *revision*
  * and not a *build*, and a fork's artifact was indistinguishable from ours.
  *
@@ -86,7 +86,7 @@ abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParamete
  * because on a pull request both defaults name something other than the code that was built:
  *
  * `GITHUB_REPOSITORY` is the repository that *ran* the workflow. A pull request from a fork is
- * built here, so it would stamp `JingMatrix/Vector` onto a branch that has never been near it —
+ * built here, so it would stamp `owner/repo` onto a branch that has never been near it —
  * which is exactly the artifact the name most needs to distinguish.
  *
  * `HEAD` is worse. For a pull request the runner checks out an ephemeral merge of the branch into

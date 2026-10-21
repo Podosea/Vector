@@ -5,12 +5,12 @@ import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.util.Log;
 
-import org.matrix.vector.util.Utils;
-import org.matrix.vector.impl.hooks.VectorNativeHooker;
-import org.matrix.vector.impl.hooks.VectorInvocation;
-import org.matrix.vector.impl.hooks.VectorLegacyCallback;
-import org.matrix.vector.nativebridge.HookBridge;
-import org.matrix.vector.nativebridge.ResourcesHook;
+import io.leafcore.util.Utils;
+import io.leafcore.impl.hooks.LeafNativeHooker;
+import io.leafcore.impl.hooks.LeafInvocation;
+import io.leafcore.impl.hooks.LeafLegacyCallback;
+import io.leafcore.nativebridge.HookBridge;
+import io.leafcore.nativebridge.ResourcesHook;
 
 import java.lang.reflect.Executable;
 import java.lang.reflect.InvocationTargetException;
@@ -43,7 +43,7 @@ public final class XposedBridge {
     /**
      * @hide
      */
-    public static final String TAG = "VectorLegacyBridge";
+    public static final String TAG = "LeafLegacyBridge";
 
     /**
      * @deprecated Use {@link #getXposedVersion()} instead.
@@ -142,7 +142,7 @@ public final class XposedBridge {
         // framework's own that is wanted: the platform's returns an empty string for any
         // UnknownHostException cause chain, so a module logging a failed request landed an empty
         // line in the modules log.
-        String logStr = org.matrix.vector.util.Log.getStackTraceString(t);
+        String logStr = io.leafcore.util.Log.getStackTraceString(t);
         Log.e(TAG, logStr);
     }
 
@@ -183,20 +183,20 @@ public final class XposedBridge {
         } else if (Modifier.isAbstract(hookMethod.getModifiers())) {
             throw new IllegalArgumentException(hookMethod + " is abstract: it has no body to hook. Hook the concrete override instead.");
         } else if (hookMethod.getDeclaringClass().getClassLoader() == XposedBridge.class.getClassLoader()) {
-            throw new IllegalArgumentException(hookMethod + " belongs to Vector itself. Hooking the framework would hook the code running your hook.");
+            throw new IllegalArgumentException(hookMethod + " belongs to Leaf itself. Hooking the framework would hook the code running your hook.");
         } else if (hookMethod.getDeclaringClass() == Method.class && hookMethod.getName().equals("invoke")) {
-            throw new IllegalArgumentException("Method.invoke cannot be hooked: Vector calls it to run the original of every hooked method, so a hook here would call itself forever.");
+            throw new IllegalArgumentException("Method.invoke cannot be hooked: Leaf calls it to run the original of every hooked method, so a hook here would call itself forever.");
         } else if (hookMethod.getDeclaringClass() == Object.class && hookMethod.getName().equals("getClass")) {
             // Since AGP 9, R8 compiles Kotlin null checks into Object.getClass(), so the dispatch
             // calls it entering every hooked method; a hook here re-enters the dispatch. See #798.
-            throw new IllegalArgumentException("Object.getClass cannot be hooked: Vector's dispatch calls it entering every hooked method, so a hook here would call itself forever.");
+            throw new IllegalArgumentException("Object.getClass cannot be hooked: Leaf's dispatch calls it entering every hooked method, so a hook here would call itself forever.");
         }
 
         if (callback == null) {
             throw new IllegalArgumentException("callback should not be null!");
         }
 
-        if (!HookBridge.hookMethod(false, (Executable) hookMethod, VectorNativeHooker.class, callback.priority, callback)) {
+        if (!HookBridge.hookMethod(false, (Executable) hookMethod, LeafNativeHooker.class, callback.priority, callback)) {
             log("Failed to hook " + hookMethod);
             return null;
         }
@@ -313,7 +313,7 @@ public final class XposedBridge {
             throw new IllegalArgumentException("method must be of type Method or Constructor");
         }
 
-        return VectorInvocation.invokeOriginal((Executable) method, thisObject, args);
+        return LeafInvocation.invokeOriginal((Executable) method, thisObject, args);
     }
 
     /**
@@ -373,12 +373,12 @@ public final class XposedBridge {
 
     public static class LegacyApiSupport<T extends Executable> {
         private final XC_MethodHook.MethodHookParam<T> param;
-        private final VectorLegacyCallback<T> callback;
+        private final LeafLegacyCallback<T> callback;
         private final Object[] snapshot;
 
         private int beforeIdx;
 
-        public LegacyApiSupport(VectorLegacyCallback<T> callback, Object[] legacySnapshot) {
+        public LegacyApiSupport(LeafLegacyCallback<T> callback, Object[] legacySnapshot) {
             this.param = new XC_MethodHook.MethodHookParam<>();
             this.callback = callback;
             this.snapshot = legacySnapshot;
@@ -424,7 +424,7 @@ public final class XposedBridge {
             syncronizeApi(param, callback, false);
         }
 
-        private void syncronizeApi(XC_MethodHook.MethodHookParam<T> param, VectorLegacyCallback<T> callback, boolean forward) {
+        private void syncronizeApi(XC_MethodHook.MethodHookParam<T> param, LeafLegacyCallback<T> callback, boolean forward) {
             if (forward) {
                 param.method = callback.getMethod();
                 param.thisObject = callback.getThisObject();

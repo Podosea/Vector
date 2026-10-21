@@ -15,7 +15,7 @@ import android.os.Binder;
  *
  * Nothing dispatches the two absent from the old file today: `onUidStateChanged` and
  * `onUidProcAdjChanged` are gated on UID_OBSERVER_PROCSTATE, UID_OBSERVER_CAPABILITY and
- * UID_OBSERVER_PROC_OOM_ADJ, and `VectorService` registers for ACTIVE, GONE, IDLE and CACHED. So
+ * UID_OBSERVER_PROC_OOM_ADJ, and `LeafService` registers for ACTIVE, GONE, IDLE and CACHED. So
  * this is insurance against a wider mask -- ours or an OEM's -- not a live crash.
  *
  * Both signatures are declared for the two methods that changed shape. Only one of each pair

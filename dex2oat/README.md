@@ -1,6 +1,6 @@
-# VectorDex2Oat
+# LeafDex2Oat
 
-VectorDex2Oat is a specialized wrapper and instrumentation suite for the Android `dex2oat` (Ahead-of-Time compiler) binary. It is designed to intercept the compilation process, force specific compiler behaviors (specifically disabling method inlining), and transparently spoof the resulting OAT metadata to hide the presence of the wrapper.
+LeafDex2Oat is a specialized wrapper and instrumentation suite for the Android `dex2oat` (Ahead-of-Time compiler) binary. It is designed to intercept the compilation process, force specific compiler behaviors (specifically disabling method inlining), and transparently spoof the resulting OAT metadata to hide the presence of the wrapper.
 
 ## Overview
 
@@ -21,7 +21,7 @@ This project consists of two primary components:
 
 ### The Wrapper [dex2oat.cpp](src/main/cpp/dex2oat.cpp)
 The wrapper acts as a "man-in-the-middle" for the compiler. When called by the system, it
-1.  connects to a predefined Unix socket (the stub name `5291374ceda0...` will be replaced during installation of `Vector`);
+1.  connects to a predefined Unix socket (the stub name `5291374ceda0...` will be replaced during installation of `Leaf`);
 2.  identifies the target architecture (32-bit vs 64-bit) and debug status;
 3.  receives File Descriptors (FDs) for both the original `dex2oat` binary and the `oat_hook` library;
 4.  reconstructs the command line, replacing the wrapper path with the original binary path and appending the "no-inline" flags;
@@ -29,7 +29,7 @@ The wrapper acts as a "man-in-the-middle" for the compiler. When called by the s
 6.  invokes the dynamic linker (`linker64`) to execute the compiler.
 
 ### The Hooker [oat_hook.cpp](src/main/cpp/oat_hook.cpp)
-The hooker library is preloaded into the compiler's address space. It uses the [LSPlt](https://github.com/JingMatrix/LSPlt) library to:
+The hooker library is preloaded into the compiler's address space. It uses the LSPlt library to:
 1.  Scan the memory map to find the `dex2oat` binary.
 2.  Locate and hook internal ART functions:
     *   [art::OatHeader::GetKeyValueStore](https://cs.android.com/android/platform/superproject/+/android-latest-release:art/runtime/oat/oat.cc;l=366)

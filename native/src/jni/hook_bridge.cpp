@@ -899,7 +899,7 @@ VECTOR_DEF_NATIVE_METHOD(jobjectArray, HookBridge, callbackSnapshot, jclass call
     jobjectArray res = env->NewObjectArray(2, obj_array_class, nullptr);
 
     // Create modern and legacy arrays
-    // Use 'callback_class' (VectorHookRecord) for the modern array for strict type safety
+    // Use 'callback_class' (LeafHookRecord) for the modern array for strict type safety
     jobjectArray modern =
         env->NewObjectArray((jsize)hook_item->modern_callbacks.size(), callback_class, nullptr);
     jobjectArray legacy =

@@ -1,17 +1,17 @@
 -keepclasseswithmembers,includedescriptorclasses class * {
     native <methods>;
 }
--keepclasseswithmembers class org.matrix.vector.daemon.VectorDaemon {
+-keepclasseswithmembers class io.leafcore.daemon.LeafDaemon {
     public static void main(java.lang.String[]);
 }
--keepclasseswithmembers class org.matrix.vector.daemon.Cli {
+-keepclasseswithmembers class io.leafcore.daemon.Cli {
     public static void main(java.lang.String[]);
 }
 
 
 # Keep IPC data models intact so Gson serializes the correct JSON keys
--keep class org.matrix.vector.daemon.CliRequest { *; }
--keep class org.matrix.vector.daemon.CliResponse { *; }
+-keep class io.leafcore.daemon.CliRequest { *; }
+-keep class io.leafcore.daemon.CliResponse { *; }
 
 # Preserve annotations, generic signatures, and inner classes (critical for picocli reflection)
 -keepattributes *Annotation*, Signature, InnerClasses, EnclosingMethod
@@ -31,7 +31,7 @@
 }
 
 
--keepclasseswithmembers class org.matrix.vector.daemon.env.LogcatMonitor {
+-keepclasseswithmembers class io.leafcore.daemon.env.LogcatMonitor {
     private int refreshFd(boolean);
 }
 -keepclassmembers class ** implements android.content.ContextWrapper {
@@ -52,4 +52,4 @@
 # its own, or ART resolves `IServiceCallback$Stub` while verifying registerProxyService and logs a
 # NoClassDefFoundError on older platforms (issue #925). Pinning stops R8 from inlining or merging
 # the holder back into SystemServerService; renaming it is still fine.
--keep,allowobfuscation class org.matrix.vector.daemon.ipc.ServiceRegistrationWatcher { *; }
+-keep,allowobfuscation class io.leafcore.daemon.ipc.ServiceRegistrationWatcher { *; }

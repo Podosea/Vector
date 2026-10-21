@@ -16,10 +16,10 @@
           to get to — several of the scenarios exist precisely because the app is not working.
         -->
         <activity
-            android:name="org.matrix.vector.manager.demo.DemoActivity"
+            android:name="io.leafcore.manager.demo.DemoActivity"
             android:exported="true"
-            android:label="Vector demo states"
-            android:taskAffinity="org.matrix.vector.manager.demo">
+            android:label="Leaf demo states"
+            android:taskAffinity="io.leafcore.manager.demo">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

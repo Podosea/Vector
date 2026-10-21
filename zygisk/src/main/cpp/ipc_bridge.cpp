@@ -79,7 +79,7 @@ private:
 };
 
 // --- Binder IPC Protocol Constants ---
-// These are the "secret handshakes" used to communicate with the Vector manager service.
+// These are the "secret handshakes" used to communicate with the Leaf manager service.
 
 // The name of the system service we use as a rendezvous point to find our manager service.
 // Using "activity" is a common technique as it's always available.
@@ -517,7 +517,7 @@ void IPCBridge::HookBridge(JNIEnv *env) {
     // Get framework-specific Java classes and methods ---
     const auto &obfs_map = ConfigBridge::GetInstance()->obfuscation_map();
     std::string bridge_service_class_name;
-    bridge_service_class_name = obfs_map.at("org.matrix.vector.service.") + "BridgeService";
+    bridge_service_class_name = obfs_map.at("io.leafcore.service.") + "BridgeService";
 
     auto bridge_class_ref =
         Context::GetInstance()->FindClassFromCurrentLoader(env, bridge_service_class_name);

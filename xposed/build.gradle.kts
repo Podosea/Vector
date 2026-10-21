@@ -21,7 +21,7 @@ plugins {
 ktfmt { kotlinLangStyle() }
 
 android {
-    namespace = "org.matrix.vector.impl"
+    namespace = "io.leafcore.impl"
 
     androidResources { enable = false }
 

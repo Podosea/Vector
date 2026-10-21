@@ -14,7 +14,7 @@ namespace vector::native::module {
 
 /**
  * @class IPCBridge
- * @brief Manages Binder IPC communication with the Vector host service.
+ * @brief Manages Binder IPC communication with the Leaf host service.
  *
  * This singleton class is the communication arm of the Zygisk module. Its key responsibilities are:
  * 1. Discovering and connecting to the central host service (the "manager").

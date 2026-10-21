@@ -1,6 +1,6 @@
-# Vector Daemon Subsystem
+# Leaf Daemon Subsystem
 
-The Vector daemon is a standalone, root-privileged Dalvik executable bootstrapped via `app_process`. Operating entirely outside the standard Android application sandbox, it serves as the central coordinator, state manager, and inter-process communication (IPC) asset server for the Vector framework. 
+The Leaf daemon is a standalone, root-privileged Dalvik executable bootstrapped via `app_process`. Operating entirely outside the standard Android application sandbox, it serves as the central coordinator, state manager, and inter-process communication (IPC) asset server for the Leaf framework. 
 
 Target processes operating under strict Android sandbox and SELinux constraints cannot safely access external configuration files or SQLite databases. The daemon offloads these operations, providing an IPC backend that serves memory-mapped resources, configuration states, and native file descriptors to target applications securely and efficiently.
 
@@ -11,15 +11,15 @@ The daemon is organized into discrete packages handling IPC, state management, O
 ```text
 src/main/
 ├── jni/                      # Native C++ implementations (dex2oat wrapper, logcat parser)
-└── kotlin/org/matrix/vector/daemon/
+└── kotlin/io/leafcore/daemon/
     ├── data/                 # SQLite schema, immutable state cache, and file operations
     ├── env/                  # UNIX domain socket servers and native process monitors
     ├── ipc/                  # AIDL endpoints (Framework, Manager, ModuleApp, InjectedModule, SystemServer)
     ├── system/               # System binder delegates and Notification UI
     ├── utils/                # Context forgery, signature verification, and JNI bridges
     ├── Cli.kt                # Command-line interface definitions
-    ├── VectorDaemon.kt       # Main entry point and looper initialization
-    └── VectorService.kt      # Primary IVectorDaemon implementation
+    ├── LeafDaemon.kt       # Main entry point and looper initialization
+    └── LeafService.kt      # Primary ILeafDaemon implementation
 ```
 
 ## Concurrency and State Management
@@ -40,7 +40,7 @@ That separation is what gives a scope row its lifetime.
 * The package name is the whole identity. A different build that later claims the name inherits the scope, so a row is a statement about a name rather than about a signed application.
 * While its target is absent, a row is invisible in the manager, which lists installed applications only. It survives an apply regardless: the scope editor writes the difference the reader made rather than replacing the table, so a row it cannot draw is neither shown nor dropped.
 * Four paths delete a row, and nothing else does — a module's scope being replaced wholesale (a manager apply, the CLI, a restore), an explicit removal (`scope remove`, or a module withdrawing its own request), pruning a module to the scope its `module.prop` fixes, and the foreign key cascade when the module itself is uninstalled.
-* Package events decide by name. A package that has just been installed arrives under a uid the cache has never seen — a reinstalled target is not the uid it left as — so `VectorService` asks the scope table whether the package is a target before requesting a rebuild. Matching the arriving uid against the cache answers "no" for precisely the case that needs the rebuild.
+* Package events decide by name. A package that has just been installed arrives under a uid the cache has never seen — a reinstalled target is not the uid it left as — so `LeafService` asks the scope table whether the package is a target before requesting a rebuild. Matching the arriving uid against the cache answers "no" for precisely the case that needs the rebuild.
 
 Module configuration follows the opposite rule: a module whose package no user holds any more is deleted from the database along with its scope and its preferences. A module that is not installed cannot be loaded into anything, while a target that is not installed is only a target that is not running.
 
@@ -49,17 +49,17 @@ Module configuration follows the opposite rule: a module whose package no user h
 The daemon implements a multi-layered IPC design utilizing Android's Binder mechanism and UNIX domain sockets. It avoids registering standard AIDL services with `ServiceManager`, relying instead on intercepting Binder transactions via the Zygisk module and actively pushing Binder references to target processes.
 
 ### 1. System Server Bootstrapping
-During device boot, the daemon establishes a communication channel with the native Vector Zygisk module residing in `system_server`.
+During device boot, the daemon establishes a communication channel with the native Leaf Zygisk module residing in `system_server`.
 
 * The daemon registers an `IServiceCallback` to listen for the registration of a hardware proxy service (typically the `serial` service). Once intercepted, the daemon replaces the proxy service with its own binder.
 * The Zygisk module queries this proxy service to retrieve the framework loader DEX via `SharedMemory` and the class obfuscation map.
-* Concurrently, the daemon sends a raw `ACTION_SEND_BINDER` transaction to the `activity` service. The Zygisk module's JNI hook intercepts this transaction before it reaches the Activity Manager, extracting and storing the daemon's primary `VectorService` binder for future use.
+* Concurrently, the daemon sends a raw `ACTION_SEND_BINDER` transaction to the `activity` service. The Zygisk module's JNI hook intercepts this transaction before it reaches the Activity Manager, extracting and storing the daemon's primary `LeafService` binder for future use.
 
 ### 2. Target Application Rendezvous
 When a standard user application spawns, it requests framework access from the daemon.
 
 * The target application queries the `activity` service. The Zygisk module inside `system_server` intercepts this query.
-* The `system_server` forwards the application's UID, PID, process name, and a newly created heartbeat `BBinder` to the daemon using the previously stored `VectorService` reference.
+* The `system_server` forwards the application's UID, PID, process name, and a newly created heartbeat `BBinder` to the daemon using the previously stored `LeafService` reference.
 * The daemon verifies the request against its `ConfigCache` to determine if the application is within the scope of any enabled modules.
 * If approved, the daemon returns an `FrameworkService` binder, which the `system_server` passes back to the target application.
 * The daemon links a `DeathRecipient` to the heartbeat binder to automatically clean up internal tracking maps when the application process dies.
@@ -85,7 +85,7 @@ The daemon relies on native C++ subsystems to intercept Android's compilation pi
 
 ### AOT Compilation Hijacking
 
-Android's ART compiler aggressively inlines methods, which permanently prevents those methods from being hooked at runtime. To enforce the `--inline-max-code-units=0` flag system-wide, Vector utilizes a C++ binary wrapper mounted over the system's `dex2oat` and `dex2oat64` binaries. 
+Android's ART compiler aggressively inlines methods, which permanently prevents those methods from being hooked at runtime. To enforce the `--inline-max-code-units=0` flag system-wide, Leaf utilizes a C++ binary wrapper mounted over the system's `dex2oat` and `dex2oat64` binaries. 
 
 The daemon manages this interception entirely through its native JNI layer. To ensure the replaced compiler binaries are globally visible to all newly spawned application processes, the daemon forks a privileged child process and uses `setns` with `CLONE_NEWNS` to enter the `init` (`PID 1`) mount namespace via `/proc/1/ns/mnt`. It then performs read-only bind mounts (`MS_BIND | MS_REMOUNT | MS_RDONLY`) over the target compiler binaries located in the `/apex` mount points.
 
@@ -96,6 +96,6 @@ If the wrapper is disabled or incompatible, the daemon unmounts the binaries and
 ### Native Logcat Monitoring
 Instead of relying on standard logcat shell execution, the daemon runs a native C++ process that interfaces directly with Android's `liblog` buffers (`LOG_ID_MAIN` and `LOG_ID_CRASH`). 
 
-The native parser performs zero-copy processing of log events, strictly filtering output by predefined exact tags (e.g., Magisk, KernelSU) and prefix tags (e.g., dex2oat, Vector, LSPosed). It writes the filtered output into two rotating log files: one for module frameworks and one for verbose system debugging, rotating them automatically when they reach 4MB.
+The native parser performs zero-copy processing of log events, strictly filtering output by predefined exact tags (e.g., Magisk, KernelSU) and prefix tags (e.g., dex2oat, Leaf, LSPosed). It writes the filtered output into two rotating log files: one for module frameworks and one for verbose system debugging, rotating them automatically when they reach 4MB.
 
 To control this isolated native loop, the Kotlin daemon injects specific string triggers (such as `!!refresh_modules!!` or `!!start_verbose!!`) directly into the Android log stream. The C++ parser intercepts these specific messages originating from its own parent PID and dynamically rotates its file descriptors or alters its verbosity state without requiring additional IPC overhead.

@@ -61,8 +61,8 @@ private:
 };
 
 /**
- * @class VectorModule
- * @brief The core implementation of the Zygisk module for the Vector framework.
+ * @class LeafModule
+ * @brief The core implementation of the Zygisk module for the Leaf framework.
  *
  * This class is the main entry point for Zygisk. It inherits from:
  * - zygisk::ModuleBase:      To receive lifecycle callbacks from the Zygisk loader.
@@ -73,7 +73,7 @@ private:
  * using the IPCBridge to fetch the framework from the manager service, and then
  * using the Context base to perform the actual injection.
  */
-class VectorModule : public zygisk::ModuleBase, public vector::native::Context {
+class LeafModule : public zygisk::ModuleBase, public vector::native::Context {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override;
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override;
@@ -126,7 +126,7 @@ private:
             [](auto symbol) { return ElfSymbolCache::GetArt()->getSymbAddress(symbol); },
         .art_symbol_prefix_resolver =
             [](auto symbol) { return ElfSymbolCache::GetArt()->getSymbPrefixFirstAddress(symbol); },
-        .generated_class_name = "Vector_",
+        .generated_class_name = "Leaf_",
         .generated_source_name = "Dobby",
     };
 
@@ -136,10 +136,10 @@ private:
 };
 
 // =========================================================================================
-// Implementation of VectorModule
+// Implementation of LeafModule
 // =========================================================================================
 
-void VectorModule::LoadDex(JNIEnv *env, PreloadedDex &&dex) {
+void LeafModule::LoadDex(JNIEnv *env, PreloadedDex &&dex) {
     LOGV("Loading framework DEX into memory (size: {}).", dex.size());
 
     // Get the system ClassLoader. This will be the parent of our new loader.
@@ -197,7 +197,7 @@ void VectorModule::LoadDex(JNIEnv *env, PreloadedDex &&dex) {
     LOGV("Framework ClassLoader created successfully.");
 }
 
-void VectorModule::SetupEntryClass(JNIEnv *env) {
+void LeafModule::SetupEntryClass(JNIEnv *env) {
     if (!inject_class_loader_) {
         LOGE("Cannot setup entry class: ClassLoader is null.");
         return;
@@ -206,7 +206,7 @@ void VectorModule::SetupEntryClass(JNIEnv *env) {
     // Use the obfuscation map from the config to get the real class name.
     const auto &obfs_map = ConfigBridge::GetInstance()->obfuscation_map();
     std::string entry_class_name;
-    entry_class_name = obfs_map.at("org.matrix.vector.core.") + "Main";
+    entry_class_name = obfs_map.at("io.leafcore.core.") + "Main";
 
     // We must find the class through our custom ClassLoader.
     auto entry_class = this->FindClassFromLoader(env, inject_class_loader_, entry_class_name);
@@ -220,17 +220,17 @@ void VectorModule::SetupEntryClass(JNIEnv *env) {
     LOGV("Framework entry class '{}' located.", entry_class_name.c_str());
 }
 
-void VectorModule::onLoad(zygisk::Api *api, JNIEnv *env) {
+void LeafModule::onLoad(zygisk::Api *api, JNIEnv *env) {
     this->api_ = api;
     this->env_ = env;
 
     // Create two singlton instances for classes Context and ConfigBridge
     instance_.reset(this);
     ConfigImpl::Init();
-    LOGD("Vector Zygisk module loaded");
+    LOGD("Leaf Zygisk module loaded");
 }
 
-void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
+void LeafModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
     // Reset state for this new process fork.
     should_inject_ = false;
     is_manager_app_ = false;
@@ -312,7 +312,7 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
     LOGV("Process '{}' (UID: {}) is marked for injection.", nice_name_str.get(), args->uid);
 }
 
-void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
+void LeafModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
     if (!should_inject_) {
         SetAllowUnload(true);  // Not a target, allow module to be unloaded.
         return;
@@ -366,7 +366,7 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
         JNI_FALSE, JNI_FALSE, args->nice_name, args->app_data_dir, binder.get(), is_manager_app_);
 
     if (entered) {
-        LOGV("Injected Vector framework into '{}'.", nice_name_str.get());
+        LOGV("Injected Leaf framework into '{}'.", nice_name_str.get());
     } else {
         LOGE("Framework entry failed in '{}'; this process runs without Xposed.",
              nice_name_str.get());
@@ -376,7 +376,7 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
     SetAllowUnload(false);
 }
 
-void VectorModule::preServerSpecialize(zygisk::ServerSpecializeArgs *args) {
+void LeafModule::preServerSpecialize(zygisk::ServerSpecializeArgs *args) {
     // The system server is always a target for injection.
     should_inject_ = true;
     LOGI("System server process detected. Marking for injection.");
@@ -385,7 +385,7 @@ void VectorModule::preServerSpecialize(zygisk::ServerSpecializeArgs *args) {
     IPCBridge::GetInstance().Initialize(env_);
 }
 
-void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
+void LeafModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
     if (!should_inject_) {
         SetAllowUnload(true);
         return;
@@ -417,7 +417,7 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
     auto &ipc_bridge = IPCBridge::GetInstance();
     std::string bridgeServiceName = "serial";
     bool is_late_inject = (args->runtime_flags & RuntimeFlags::LATE_INJECT) != 0;
-    if (is_late_inject) bridgeServiceName = "serial_vector";
+    if (is_late_inject) bridgeServiceName = "serial_leaf";
     auto system_binder = ipc_bridge.RequestSystemServerBinder(env_, bridgeServiceName);
     if (!system_binder) {
         LOGE("Failed to get system server IPC binder. Aborting injection.");
@@ -461,7 +461,7 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
         is_manager_app_);
 
     if (entered) {
-        LOGI("Injected Vector framework into system_server.");
+        LOGI("Injected Leaf framework into system_server.");
     } else {
         LOGE("Framework entry failed in system_server; it runs without Xposed.");
     }
@@ -469,7 +469,7 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
     SetAllowUnload(false);
 }
 
-void VectorModule::SetAllowUnload(bool unload) {
+void LeafModule::SetAllowUnload(bool unload) {
     if (api_ && unload) {
         LOGD("Allowing Zygisk to unload module library.");
         api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
@@ -490,4 +490,4 @@ void VectorModule::SetAllowUnload(bool unload) {
 // =========================================================================================
 // Zygisk Module Registration
 // =========================================================================================
-REGISTER_ZYGISK_MODULE(vector::native::module::VectorModule);
+REGISTER_ZYGISK_MODULE(vector::native::module::LeafModule);

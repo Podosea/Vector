@@ -25,8 +25,8 @@ std::once_flag init_flag;
 std::map<std::string, std::string> signatures = {
     {"Lde/robv/android/xposed/", ""},         {"Landroid/app/AndroidApp", ""},
     {"Landroid/content/res/XRes", ""},        {"Landroid/content/res/XModule", ""},
-    {"Lio/github/libxposed/api/Xposed", ""},  {"Lorg/matrix/vector/core/", ""},
-    {"Lorg/matrix/vector/nativebridge/", ""}, {"Lorg/matrix/vector/service/", ""},
+    {"Lio/github/libxposed/api/Xposed", ""},  {"Lio/leafcore/core/", ""},
+    {"Lio/leafcore/nativebridge/", ""}, {"Lio/leafcore/service/", ""},
 };
 
 jclass class_file_descriptor = nullptr;
@@ -146,7 +146,7 @@ static jobject stringMapToJavaHashMap(JNIEnv *env, const std::map<std::string, s
 }
 
 extern "C" JNIEXPORT jobject JNICALL
-Java_org_matrix_vector_daemon_utils_ObfuscationManager_getSignatures(
+Java_io_leafcore_daemon_utils_ObfuscationManager_getSignatures(
     JNIEnv *env, [[maybe_unused]] jclass clazz) {
     ensureInitialized(env);
 
@@ -192,7 +192,7 @@ static int obfuscateDexBuffer(const void *dex_data, size_t size) {
 }
 
 extern "C" JNIEXPORT jobject JNICALL
-Java_org_matrix_vector_daemon_utils_ObfuscationManager_obfuscateDex(JNIEnv *env,
+Java_io_leafcore_daemon_utils_ObfuscationManager_obfuscateDex(JNIEnv *env,
                                                                     [[maybe_unused]] jclass clazz,
                                                                     jobject memory) {
     ensureInitialized(env);

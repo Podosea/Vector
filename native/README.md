@@ -1,4 +1,4 @@
-# Vector Native Library (`native`)
+# Leaf Native Library (`native`)
 
 ## Purpose and Design Philosophy
 

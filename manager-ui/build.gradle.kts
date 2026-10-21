@@ -1,4 +1,4 @@
-// Shared manager layer, consumed by both Vector's manager app and LSPatch's manager (via the
+// Shared manager layer, consumed by both Leaf's manager app and LSPatch's manager (via the
 // composite-build substitution vector:manager-ui). Holds the reusable, backend-agnostic Compose --
 // the panel header, search field, ambience, theme seed, the store HTML renderer -- and the shared
 // network stack: the one OkHttp client, the DoH resolver and its status section, so both apps
@@ -19,7 +19,7 @@ kotlin {
 }
 
 android {
-    namespace = "org.matrix.vector.ui"
+    namespace = "io.leafcore.ui"
     buildFeatures { compose = true }
 }
 

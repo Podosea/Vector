@@ -54,7 +54,10 @@ val injectedPackageName = rootProject.extra["injectedPackageName"] as String
 val versionHashProvider = rootProject.extra["versionHashProvider"] as Provider<String>
 
 android {
-    namespace = defaultManagerPackageName
+    // The application id is what the package manager and other apps see
+    // (io.leafcore.bridge); the namespace only decides where R and BuildConfig
+    // are generated and must match the Kotlin package of this module.
+    namespace = "io.leafcore.manager"
 
     buildFeatures {
         compose = true

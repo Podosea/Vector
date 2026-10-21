@@ -33,7 +33,7 @@ val injectedPackageUid = rootProject.extra["injectedPackageUid"] as Int
 val defaultManagerPackageName = rootProject.extra["defaultManagerPackageName"] as String
 
 android {
-    namespace = "org.matrix.vector"
+    namespace = "io.leafcore"
 
     defaultConfig {
         multiDexEnabled = false
@@ -79,7 +79,7 @@ dependencies {
     compileOnly(projects.hiddenapi.stubs)
 }
 
-val zipAll = tasks.register("zipAll") { group = "Vector" }
+val zipAll = tasks.register("zipAll") { group = "Leaf" }
 
 androidComponents {
     onVariants(selector().all()) { variant ->
@@ -95,7 +95,7 @@ androidComponents {
         // Using Sync ensures that stale files from previous runs are removed.
         val prepareModuleFilesTask =
             tasks.register<Sync>("prepareModuleFiles$variantCapped") {
-                group = "Vector Module Packaging"
+                group = "Leaf Module Packaging"
                 dependsOn(
                     "assemble$variantCapped",
                     ":manager:package$variantCapped",
@@ -183,7 +183,7 @@ androidComponents {
 
         val zipTask =
             tasks.register<Zip>("zip${variantCapped}") {
-                group = "Vector Module Packaging"
+                group = "Leaf Module Packaging"
                 dependsOn(prepareModuleFilesTask)
                 archiveFileName = zipFileName
                 destinationDirectory = file("$projectDir/release")
@@ -272,7 +272,7 @@ val resourceOwners =
         "de.robv.android.xposed.XposedInit",
         "de.robv.android.xposed.callbacks.XC_InitPackageResources",
         "de.robv.android.xposed.callbacks.XC_LayoutInflated",
-        "org.matrix.vector.legacy.LegacyDelegateImpl\$ResourceProxy",
+        "io.leafcore.legacy.LegacyDelegateImpl\$ResourceProxy",
     )
 
 /** Every type named anywhere in [cls] — its shape, its members and its instruction stream. */

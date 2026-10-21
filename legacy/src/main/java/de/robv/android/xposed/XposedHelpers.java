@@ -8,7 +8,7 @@ import androidx.annotation.Nullable;
 
 import org.apache.commons.lang3.ClassUtilsX;
 import org.apache.commons.lang3.reflect.MemberUtilsX;
-import org.matrix.vector.nativebridge.HookBridge;
+import io.leafcore.nativebridge.HookBridge;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;

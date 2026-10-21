@@ -11,4 +11,4 @@
 # The in-memory built class xposed.dummy.XResourcesSuperClass exists only on the device, so the
 # class below is a deliberate split: it isolates the reference to XResources from its owner, which
 # would otherwise be verified long before that super class exists.
--keepclassmembers class org.matrix.vector.legacy.LegacyDelegateImpl$ResourceProxy { *; }
+-keepclassmembers class io.leafcore.legacy.LegacyDelegateImpl$ResourceProxy { *; }

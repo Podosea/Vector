@@ -10,7 +10,7 @@
 }
 
 # Preserve the JNI Hook Trampoline
--keepclassmembers class org.matrix.vector.impl.hooks.VectorNativeHooker {
+-keepclassmembers class io.leafcore.impl.hooks.LeafNativeHooker {
     public <init>(java.lang.reflect.Executable);
     public java.lang.Object callback(java.lang.Object[]);
 }

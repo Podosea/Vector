@@ -6,10 +6,10 @@ import android.content.SharedPreferences;
 import android.os.Environment;
 import android.preference.PreferenceManager;
 
-import org.matrix.vector.util.Log;
-import org.matrix.vector.impl.core.VectorServiceClient;
-import org.matrix.vector.impl.utils.VectorMetaDataReader;
-import org.matrix.vector.legacy.BuildConfig;
+import io.leafcore.util.Log;
+import io.leafcore.impl.core.LeafServiceClient;
+import io.leafcore.impl.utils.LeafMetaDataReader;
+import io.leafcore.legacy.BuildConfig;
 import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.File;
@@ -160,14 +160,14 @@ public final class XSharedPreferences implements SharedPreferences {
             int xposedminversion = -1;
             boolean xposedsharedprefs = false;
             try {
-                Map<String, Object> metaData = VectorMetaDataReader.getMetaData(new File(m.get()));
+                Map<String, Object> metaData = LeafMetaDataReader.getMetaData(new File(m.get()));
                 isModule = metaData.containsKey("xposedminversion");
                 if (isModule) {
                     Object minVersionRaw = metaData.get("xposedminversion");
                     if (minVersionRaw instanceof Integer) {
                         xposedminversion = (Integer) minVersionRaw;
                     } else if (minVersionRaw instanceof String) {
-                        xposedminversion = VectorMetaDataReader.extractIntPart((String) minVersionRaw);
+                        xposedminversion = LeafMetaDataReader.extractIntPart((String) minVersionRaw);
                     }
                     xposedsharedprefs = metaData.containsKey("xposedsharedprefs");
                 }
@@ -177,7 +177,7 @@ public final class XSharedPreferences implements SharedPreferences {
             newModule = isModule && (xposedminversion > 92 || xposedsharedprefs);
         }
         if (newModule) {
-            mFile = new File(VectorServiceClient.INSTANCE.getPrefsPath(packageName), prefFileName + ".xml");
+            mFile = new File(LeafServiceClient.INSTANCE.getPrefsPath(packageName), prefFileName + ".xml");
         } else {
             mFile = new File(Environment.getDataDirectory(), "data/" + packageName + "/shared_prefs/" + prefFileName + ".xml");
         }
@@ -194,7 +194,7 @@ public final class XSharedPreferences implements SharedPreferences {
             Path path = mFile.toPath();
             try {
                 if (sWatcher == null) {
-                    sWatcher = new File(VectorServiceClient.INSTANCE.getPrefsPath("")).toPath().getFileSystem().newWatchService();
+                    sWatcher = new File(LeafServiceClient.INSTANCE.getPrefsPath("")).toPath().getFileSystem().newWatchService();
                     if (BuildConfig.DEBUG) Log.d(TAG, "Created WatchService instance");
                 }
                 mWatchKey = path.getParent().register(sWatcher, StandardWatchEventKinds.ENTRY_CREATE,

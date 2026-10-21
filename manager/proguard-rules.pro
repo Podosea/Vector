@@ -3,15 +3,15 @@
 # setBinder(IBinder) on it. Neither the class nor the method has a call site inside
 # this APK, so R8 would otherwise remove or rename both and the binder handshake
 # would fail silently at runtime.
--keep class org.matrix.vector.manager.Constants {
+-keep class io.leafcore.manager.Constants {
     public static boolean setBinder(android.os.IBinder);
 }
 
 # ParasiticManagerHooker redirects the resolved activity to this class by name.
--keep class org.matrix.vector.manager.ui.MainActivity { <init>(); }
+-keep class io.leafcore.manager.ui.MainActivity { <init>(); }
 
 # AIDL stubs and the parcelables crossing the daemon boundary.
--keep class org.matrix.vector.ipc.** { *; }
+-keep class io.leafcore.ipc.** { *; }
 -keep class rikka.parcelablelist.** { *; }
 
 # kotlinx.serialization keeps generated serializers reachable from the companion.
@@ -21,7 +21,7 @@
 }
 
 # Gson models are constructed reflectively from field names.
--keepclassmembers class org.matrix.vector.manager.data.model.** { <fields>; }
+-keepclassmembers class io.leafcore.manager.data.model.** { <fields>; }
 
 # An enum's constants are reached reflectively: Enum.valueOf asks the class for its values()
 # method by name. Kotlin no longer calls that method itself — `entries` compiles to its own
