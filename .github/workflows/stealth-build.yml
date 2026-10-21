@@ -94,22 +94,53 @@ jobs:
           unzip -o -q "$ZIP" -d /tmp/scan
           fail=0
 
-          # FAIL 1：作者标识与上游品牌，任何位置命中即失败（含二进制 strings）
+          # The binaries carry the strings a scanner would grep for: the dex class names
+          # (framework dex, manager, daemon) and the module's own shell scripts.
+          BINS="/tmp/scan/framework/core.dex /tmp/scan/manager.apk /tmp/scan/daemon.apk"
+          TEXTS=$(find /tmp/scan -maxdepth 1 -type f \( -name "*.prop" -o -name "*.sh" -o -name "*.md" \))
+
+          # FAIL 1: upstream author and project name, anywhere, text or binary.
           hits=$(grep -rIl -E "JingMatrix" /tmp/scan || true)
           if [ -n "$hits" ]; then echo "::error::JingMatrix 残留文本：$hits"; fail=1; fi
-          for f in /tmp/scan/framework/core.dex /tmp/scan/manager.apk /tmp/scan/daemon.apk; do
+          for f in $BINS; do
             [ -f "$f" ] || continue
             if strings "$f" | grep -q "JingMatrix"; then echo "::error::JingMatrix 残留于 $f"; fail=1; fi
           done
 
-          # FAIL 2：模块元数据与安装脚本不得含品牌字面量
-          if grep -q "Leaf" /tmp/scan/module.prop; then echo "::error::module.prop 含 Leaf"; fail=1; fi
-          if grep -q "Leaf" /tmp/scan/customize.sh; then echo "::error::customize.sh 含 Leaf"; fail=1; fi
+          # FAIL 2: the upstream package root. This is the strongest single fingerprint and
+          # the one a decompiler finds first, so it must never come back.
+          for f in $BINS $(find /tmp/scan -maxdepth 1 -type f); do
+            [ -f "$f" ] || continue
+            if strings "$f" 2>/dev/null | grep -qE "org[./]matrix"; then
+              echo "::error::上游包名残留于 $f"; fail=1
+            fi
+          done
 
-          # WARN：Kotlin 包名未重命名（既定边界，见 FRAMEWORK-STEALTH-v0.1 §3）
-          if strings /tmp/scan/framework/core.dex | grep -q "io.leafcore"; then
-            echo "::warning::framework dex 仍含 io.leafcore 类名（已知边界，L3 项）"
+          # FAIL 3: upstream module name / store hosts in the metadata and install scripts.
+          for f in $TEXTS; do
+            [ -f "$f" ] || continue
+            if grep -qiE "vector|lsposed|modules\.lsposed\.org" "$f"; then
+              echo "::error::$(basename "$f") 含上游品牌字面量"; fail=1
+            fi
+          done
+
+          # FAIL 4: no request may name the upstream store from inside the apks.
+          for f in /tmp/scan/manager.apk /tmp/scan/daemon.apk; do
+            [ -f "$f" ] || continue
+            if strings "$f" | grep -q "lsposed\.org"; then echo "::error::商店域名残留于 $f"; fail=1; fi
+          done
+
+          # WARN: expected to be present forever — the Xposed API contract modules compile against.
+          if strings /tmp/scan/framework/core.dex | grep -q "de/robv/android/xposed"; then
+            echo "::notice::de.robv.android.xposed 存在（模块兼容性契约，预期）"
           fi
+
+          # WARN: the identity we intend to ship. Printed so a diff in the log shows what changed.
+          for f in $BINS; do
+            [ -f "$f" ] || continue
+            n=$(strings "$f" | grep -c "io\.leafcore" || true)
+            echo "::notice::$f: io.leafcore 命中 $n 处"
+          done
 
           exit $fail
 

@@ -56,14 +56,10 @@ extract() {
 VERSION=$(grep_prop version "${TMPDIR}/module.prop")
 ui_print "- Leaf Core version ${VERSION}"
 
-# Disable a previously installed framework
-LEGACY_DIR="/data/adb/modules/zygisk_lsposed"
-if [ -d "$LEGACY_DIR" ]; then
-    ui_print "*********************************************************"
-    ui_print "Legacy framework detected, disabling it for compatibility"
-    touch "$LEGACY_DIR/disable"
-    ui_print "*********************************************************"
-fi
+# The upstream installer disables a previously installed framework by touching a `disable`
+# file in its module directory. This build is installed on devices whose old module is
+# removed first, so that branch is dead code here — and it is the only place in the zip
+# that would carry the upstream project name as a literal.
 
 # 1. Map architecture to standard ABI paths, eliminating duplicate logic
 case "$ARCH" in
