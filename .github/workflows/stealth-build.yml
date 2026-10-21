@@ -1,0 +1,131 @@
+name: Stealth Build
+
+# 自用隐匿构建：只从 stealth-* 分支或手动触发，不参与上游发布链。
+on:
+  workflow_dispatch:
+  push:
+    branches: [ 'stealth-*' ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # 显式置空，避免回落到 GITHUB_REPOSITORY 把上游仓库名拼进版本串。
+      VECTOR_BUILD_REPOSITORY: ""
+      VECTOR_BUILD_COMMIT: ${{ github.sha }}
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Write key
+        env:
+          KEY_STORE: ${{ secrets.SIGNING_KEYSTORE }}
+          KEY_STORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          ALIAS: xpprivate
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEY_STORE" ]; then
+            echo "::error::SIGNING_KEYSTORE 为空。隐匿构建必须签名（manager.apk 与模块同签才被 daemon 加载）。"
+            exit 1
+          fi
+          {
+            echo "androidStorePassword=$KEY_STORE_PASSWORD"
+            echo "androidKeyAlias=$ALIAS"
+            echo "androidKeyPassword=$KEY_PASSWORD"
+            echo "androidStoreFile=key.jks"
+          } >> gradle.properties
+          printf '%s' "$KEY_STORE" | base64 --decode > key.jks
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure Gradle properties
+        run: |
+          echo 'android.native.buildOutput=verbose' >> ~/.gradle/gradle.properties
+          echo 'org.gradle.parallel=true' >> ~/.gradle/gradle.properties
+          echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC' >> ~/.gradle/gradle.properties
+
+      - name: Setup ninja
+        uses: seanmiddleditch/gha-setup-ninja@v6
+        with:
+          version: 1.13.2
+
+      - name: Setup ccache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.ccache
+            ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/build.gradle') }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Remove Android's cmake
+        shell: bash
+        run: rm -rf $ANDROID_HOME/cmake
+
+      - name: Build with Gradle
+        run: ./gradlew zipAll
+
+      - name: Static identity scan
+        run: |
+          set -uo pipefail
+          ZIP=$(ls zygisk/release/LeafCore-v*-Release.zip | head -1)
+          rm -rf /tmp/scan && mkdir -p /tmp/scan
+          unzip -o -q "$ZIP" -d /tmp/scan
+          fail=0
+
+          # FAIL 1：作者标识与上游品牌，任何位置命中即失败（含二进制 strings）
+          hits=$(grep -rIl -E "JingMatrix" /tmp/scan || true)
+          if [ -n "$hits" ]; then echo "::error::JingMatrix 残留文本：$hits"; fail=1; fi
+          for f in /tmp/scan/framework/core.dex /tmp/scan/manager.apk /tmp/scan/daemon.apk; do
+            [ -f "$f" ] || continue
+            if strings "$f" | grep -q "JingMatrix"; then echo "::error::JingMatrix 残留于 $f"; fail=1; fi
+          done
+
+          # FAIL 2：模块元数据与安装脚本不得含品牌字面量
+          if grep -q "Vector" /tmp/scan/module.prop; then echo "::error::module.prop 含 Vector"; fail=1; fi
+          if grep -q "Vector" /tmp/scan/customize.sh; then echo "::error::customize.sh 含 Vector"; fail=1; fi
+
+          # WARN：Kotlin 包名未重命名（既定边界，见 FRAMEWORK-STEALTH-v0.1 §3）
+          if strings /tmp/scan/framework/core.dex | grep -q "org.matrix.vector"; then
+            echo "::warning::framework dex 仍含 org.matrix.vector 类名（已知边界，L3 项）"
+          fi
+
+          exit $fail
+
+      - name: Prepare artifact
+        id: artifact
+        run: |
+          ZIP=$(ls zygisk/release/LeafCore-v*-Release.zip | head -1)
+          NAME=$(basename "$ZIP")
+          SHA=$(sha256sum "$ZIP" | awk '{print $1}')
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          echo "### $NAME" >> $GITHUB_STEP_SUMMARY
+          echo "sha256: \`$SHA\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload module
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: zygisk/release/LeafCore-v*-Release.zip
