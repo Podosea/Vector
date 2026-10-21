@@ -192,7 +192,8 @@ abstract class GitCommitHashValueSource : ValueSource<String, GitCommitHashValue
         val short =
             pushed?.let { capture("git", "rev-parse", "--short", it) ?: it.take(head.length) }
                 ?: head
-        return short + "-" + repository.replace('/', '-')
+        // stealth: drop the repository suffix so version strings never carry upstream identity.
+        return short
     }
 }
 
@@ -220,7 +221,7 @@ val versionNameProvider = providers.of(GitLatestTagValueSource::class.java) {}
 
 val injectedPackageName = "com.android.shell"
 val injectedPackageUid = 2000
-val defaultManagerPackageName = "org.matrix.vector.manager"
+val defaultManagerPackageName = "io.leafcore.bridge"
 
 val androidTargetSdkVersion = 37
 val androidMinSdkVersion = 27
