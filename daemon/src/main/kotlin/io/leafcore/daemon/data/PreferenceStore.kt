@@ -85,8 +85,17 @@ object PreferenceStore {
     db.delete("configs", whereClause.toString(), whereArgs.toTypedArray())
   }
 
+  /**
+   * Off unless it has been turned on.
+   *
+   * The status notification is an entry point, and this fork keeps one entry point: the launcher
+   * icon. A notification that is on by default is a second, permanent surface in the shade on every
+   * device that never opened the switch — including the ones where nobody ever will. The switch is
+   * still there for anyone who wants it back; only the default changed. See
+   * `docs/spec/FRAMEWORK-STEALTH-v0.1.md` §3.1.
+   */
   fun isStatusNotificationEnabled(): Boolean =
-      getModulePrefs("lspd", 0, "config")["enable_status_notification"] as? Boolean ?: true
+      getModulePrefs("lspd", 0, "config")["enable_status_notification"] as? Boolean ?: false
 
   fun setStatusNotification(enabled: Boolean) =
       updateModulePref("lspd", 0, "config", "enable_status_notification", enabled)

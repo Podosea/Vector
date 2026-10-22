@@ -114,12 +114,11 @@ data class ManagerPresence(
      * looking at one.
      *
      * Seeded to what the daemon itself would answer for a device where nobody has touched the
-     * preference — PreferenceStore.isStatusNotificationEnabled reads the stored value `?: true` —
+     * preference — PreferenceStore.isStatusNotificationEnabled reads the stored value `?: false` —
      * because this seed is the answer until the daemon's own has come back, which on a launch that
-     * has no binder yet is nine round trips away rather than one. Seeded false it said the opposite
-     * of what was sitting in the shade.
+     * has no binder yet is nine round trips away rather than one.
      */
-    val notificationEnabled: Boolean = true,
+    val notificationEnabled: Boolean = false,
     /**
      * False until the daemon has actually answered [notificationEnabled].
      *
@@ -147,9 +146,10 @@ data class ManagerPresence(
      * That term withholds nothing an answer has justified: both writers of [notificationEnabled]
      * set [notificationKnown] in the same update, so a false [notificationEnabled] already implies
      * the daemon answered. What keeps the dialog away from a device whose daemon never answers at
-     * all is the optimistic seed, and deliberately — HomeScreen already declines to draw it while
-     * the framework reads inactive, and the offer to install a manager APK is one only a live
-     * daemon can hand over.
+     * all is [notificationKnown] itself, not whichever value the seed holds — the seed is only an
+     * opening guess, and this one now agrees with the daemon (`?: false`). HomeScreen already
+     * declines to draw it while the framework reads inactive, and the offer to install a manager
+     * APK is one only a live daemon can hand over.
      */
     val unreachable: Boolean
         get() =
@@ -201,12 +201,12 @@ class HomeViewModel(
 
     private val _presence = MutableStateFlow(ManagerPresence())
 
-    // True is the daemon's own default for `enable_status_notification` — PreferenceStore reads the
-    // stored value `?: true` — so the switch shows what the framework is doing on a device where
-    // nobody has touched it rather than reading "off" until the daemon answers. A switch that reads
-    // off while the notification is sitting in the shade is worse than one that briefly reads
-    // optimistically: the first contradicts something the reader can see.
-    private val _statusNotification = MutableStateFlow(true)
+    // False is the daemon's own default for `enable_status_notification` — PreferenceStore reads
+    // the stored value `?: false` — so the switch shows what the framework is doing on a device
+    // where nobody has touched it. It used to be seeded true because the daemon's default was true;
+    // a seed that disagrees with the daemon is worse than either value, since the switch then
+    // contradicts the shade on the only launch where it matters.
+    private val _statusNotification = MutableStateFlow(false)
     val statusNotification: StateFlow<Boolean> = _statusNotification.asStateFlow()
 
     // True is the platform's own default for `show_hidden_icon_apps_enabled`, so the switch shows
