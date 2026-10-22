@@ -78,10 +78,30 @@ object LeafIPC {
       }
       response
     } catch (e: Exception) {
-      CliResponse(success = false, error = "Socket Failure: ${e.message}")
+      CliResponse(success = false, error = "Socket Failure: ${e.message}${staleDaemonHint(e)}")
     } finally {
       socket.close()
     }
+  }
+
+  /**
+   * A daemon left over from an earlier build answers a connection by closing it: the CLI token is
+   * a random UUID minted at build time (see `daemon/build.gradle.kts`), so the two sides disagree
+   * and `CliSocketServer` hangs up without a reply. What surfaces is "Connection reset by peer",
+   * which says nothing about the cause — and a soft reboot does not replace the daemon, so the
+   * usual remedy appears not to work. Name the situation and the fix instead.
+   */
+  private fun staleDaemonHint(e: Exception): String {
+    val message = e.message ?: return ""
+    val hungUp =
+        message.contains("reset by peer", ignoreCase = true) ||
+            message.contains("Broken pipe", ignoreCase = true)
+    if (!hungUp) return ""
+
+    val serviceScript = FileSystem.daemonApkPath.parent.resolve("service.sh")
+    return "\nThe daemon is probably still the previous build: each build carries its own CLI " +
+        "token, and a soft reboot leaves the running daemon in place. Restart it with " +
+        "`kill \$(pidof leafd); rm -f ${FileSystem.socketPath}; sh $serviceScript`, then retry."
   }
 
   private fun streamLog(fd: java.io.FileDescriptor, follow: Boolean) {
