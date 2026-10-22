@@ -65,7 +65,8 @@ object ManagerService : IManagerService.Stub() {
   private var managerPid = -1
   private var pendingManager = false
 
-  private var managerIntent: Intent? = null
+  /** Cached resolution for the no-manager-installed case; see [parasiticManagerIntent]. */
+  private var parasiticIntent: Intent? = null
 
   var guard: ManagerGuard? = null
     internal set
@@ -133,45 +134,96 @@ object ManagerService : IManagerService.Stub() {
   fun postStartManager(pid: Int): Boolean = pid == managerPid
 
   private fun getManagerIntent(): Intent? {
-    if (managerIntent != null) return managerIntent
-    runCatching {
-          var intent =
-              Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_INFO)
-                setPackage(BuildConfig.MANAGER_INJECTED_PKG_NAME)
+    // Resolved on every call rather than cached: installing, updating or uninstalling the manager
+    // does not notify the daemon, and a cached intent from an earlier boot would keep pointing at
+    // the copy that no longer exists.
+    installedManagerIntent()?.let {
+      return it
+    }
+    if (parasiticIntent != null) return parasiticIntent
+    parasiticIntent = parasiticManagerIntent()
+    return parasiticIntent
+  }
+
+  /**
+   * The manager as an ordinary installed app: its own package, its own uid, its own launcher icon.
+   *
+   * This is the preferred shape. The parasitic path runs the same code inside the shell's uid, and
+   * both end up with the same activity name — the system matches intents on that name, so whichever
+   * copy starts first keeps receiving every later one. Opening the installed manager here is what
+   * keeps the two from trading places.
+   */
+  private fun installedManagerIntent(): Intent? {
+    val probe =
+        Intent(Intent.ACTION_MAIN).apply {
+          addCategory(Intent.CATEGORY_LAUNCHER)
+          setPackage(BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME)
+        }
+    val activity =
+        runCatching {
+              packageManager
+                  ?.queryIntentActivitiesCompat(probe, probe.type, 0, 0)
+                  ?.firstOrNull()
+                  ?.activityInfo
+            }
+            .getOrNull() ?: return null
+    return Intent(Intent.ACTION_MAIN).apply {
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK
+      component = ComponentName(activity.packageName, activity.name)
+    }
+  }
+
+  /**
+   * The manager with nothing installed: its activity is resolved against the host package, and
+   * `ParasiticManagerSystemHooker` rewrites that resolution to the manager's `MainActivity` while
+   * injecting the APK from the module by fd. Kept as the fallback, not the default.
+   */
+  private fun parasiticManagerIntent(): Intent? {
+    val intent =
+        runCatching {
+              var candidate =
+                  Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_INFO)
+                    setPackage(BuildConfig.MANAGER_INJECTED_PKG_NAME)
+                  }
+              var ris =
+                  packageManager?.queryIntentActivitiesCompat(candidate, candidate.type, 0, 0)
+
+              if (ris.isNullOrEmpty()) {
+                candidate.removeCategory(Intent.CATEGORY_INFO)
+                candidate.addCategory(Intent.CATEGORY_LAUNCHER)
+                ris =
+                    packageManager?.queryIntentActivitiesCompat(candidate, candidate.type, 0, 0)
               }
-          var ris = packageManager?.queryIntentActivitiesCompat(intent, intent.type, 0, 0)
 
-          if (ris.isNullOrEmpty()) {
-            intent.removeCategory(Intent.CATEGORY_INFO)
-            intent.addCategory(Intent.CATEGORY_LAUNCHER)
-            ris = packageManager?.queryIntentActivitiesCompat(intent, intent.type, 0, 0)
-          }
-
-          if (ris.isNullOrEmpty()) {
-            val pkgInfo =
-                packageManager?.getPackageInfoCompat(
-                    BuildConfig.MANAGER_INJECTED_PKG_NAME, PackageManager.GET_ACTIVITIES, 0)
-            val activity = pkgInfo?.activities?.firstOrNull { it.processName == it.packageName }
-            if (activity != null) {
-              intent =
+              if (ris.isNullOrEmpty()) {
+                val pkgInfo =
+                    packageManager?.getPackageInfoCompat(
+                        BuildConfig.MANAGER_INJECTED_PKG_NAME, PackageManager.GET_ACTIVITIES, 0)
+                val activity =
+                    pkgInfo?.activities?.firstOrNull { it.processName == it.packageName }
+                if (activity == null) {
+                  null
+                } else {
                   Intent(Intent.ACTION_MAIN).apply {
                     component = ComponentName(activity.packageName, activity.name)
                   }
-            } else return null
-          } else {
-            val activity = ris.first().activityInfo
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            intent.component = ComponentName(activity.packageName, activity.name)
-          }
+                }
+              } else {
+                val activity = ris.first().activityInfo
+                candidate.apply {
+                  flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                  component = ComponentName(activity.packageName, activity.name)
+                }
+              }
+            }
+            .onFailure { Log.e(TAG, "Failed to build manager intent", it) }
+            .getOrNull() ?: return null
 
-          intent.categories?.clear()
-          intent.addCategory("${BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME}.LAUNCH_MANAGER")
-          intent.setPackage(BuildConfig.MANAGER_INJECTED_PKG_NAME)
-          managerIntent = Intent(intent)
-        }
-        .onFailure { Log.e(TAG, "Failed to build manager intent", it) }
-    return managerIntent
+    intent.categories?.clear()
+    intent.addCategory("${BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME}.LAUNCH_MANAGER")
+    intent.setPackage(BuildConfig.MANAGER_INJECTED_PKG_NAME)
+    return intent
   }
 
   fun openManager(withData: Uri?) {

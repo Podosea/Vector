@@ -122,6 +122,10 @@ androidComponents {
                     val tokens =
                         mapOf(
                             "MANAGER_PACKAGE_NAME" to defaultManagerPackageName,
+                            // `action.sh` opens the installed manager by component, and a
+                            // component is namespace-qualified — the application id is not the
+                            // package the code lives in (P14).
+                            "MANAGER_NAMESPACE" to defaultManagerNamespace,
                             "INJECTED_PACKAGE_NAME" to injectedPackageName,
                         )
                     filter<ReplaceTokens>("tokens" to tokens)
