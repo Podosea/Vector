@@ -61,7 +61,10 @@ object LeafDaemon {
       }
     }
 
-    Log.i(TAG, "Leaf daemon started: lateInject=$isLateInject, proxy=$proxyServiceName")
+    Log.i(
+        TAG,
+        "Leaf daemon started: lateInject=$isLateInject, proxy=$proxyServiceName, " +
+            "lockHeld=${FileSystem.lockHeld()}")
     // The hash is here rather than in the version the manager prints: Home should stay readable,
     // but every saved bug report should say exactly which commit produced the daemon that wrote it.
     Log.i(
@@ -115,6 +118,11 @@ object LeafDaemon {
     if (!isVerboseLog) {
       LogcatMonitor.stopVerbose()
     }
+
+    // The lock is what keeps a second daemon out, and it is only held for as long as one object
+    // stays reachable (see `FileSystem.lockHeld`). Say so here, where a collection has had every
+    // chance to happen, rather than let a duplicate daemon find out for us.
+    if (!FileSystem.lockHeld()) Log.e(TAG, "Daemon lock is gone; a second daemon can start")
 
     Looper.loop()
     throw RuntimeException("Main thread loop unexpectedly exited")

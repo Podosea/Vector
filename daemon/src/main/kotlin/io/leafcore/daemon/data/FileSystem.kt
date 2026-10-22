@@ -170,6 +170,20 @@ object FileSystem {
         .getOrDefault(false)
   }
 
+  /**
+   * Whether this process still holds the lock [tryLock] took.
+   *
+   * Something has to read [fileLock] or the lock does not survive a release build.
+   * `daemon/build.gradle.kts` sets `isMinifyEnabled = true`, and R8 drops stores to fields it can
+   * prove are never read: it inlined `main`'s `tryLock()` call, left the channel in a register, and
+   * threw the reference away when the method went on. The channel then became unreachable, the GC
+   * closed it, and the lock file went unlocked a second into startup — the daemon kept running with
+   * no descriptor for `/data/adb/lspd/lock` in `/proc/<pid>/fd` and no entry in `/proc/locks`. The
+   * guard against a second daemon therefore held only for the first moment of the first daemon.
+   * Reading it on the startup path is what keeps the chain reachable; do not delete this as unused.
+   */
+  fun lockHeld(): Boolean = fileLock?.isValid == true
+
   /** Clears all special file attributes (like immutable) on a directory. */
   fun chattr0(path: Path): Boolean {
     return runCatching {
