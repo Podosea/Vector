@@ -116,12 +116,16 @@ abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParamete
 abstract class GitCommitHashValueSource : ValueSource<String, GitCommitHashValueSource.Parameters> {
     interface Parameters : ValueSourceParameters {
         /**
-         * True when GitHub Actions is building this.
+         * `"true"` when GitHub Actions is building this, `"false"` otherwise.
          *
-         * Threaded in as parameters rather than read with `System.getenv` inside [obtain], which
+         * A string, not a `Property<Boolean>`: Gradle only decorates `ValueSourceParameters` with
+         * `Property<String>` and `ConfigurableFileCollection`, and a `Property<Boolean>` here fails
+         * the build outright — "Cannot have abstract method Parameters.isCi(): Property<Boolean>".
+         *
+         * Threaded in as a parameter rather than read with `System.getenv` inside [obtain], which
          * the configuration cache does not see and therefore does not invalidate on.
          */
-        val isCi: Property<Boolean>
+        val ci: Property<String>
 
         /** The full SHA that was pushed, when CI knows one and it is not what is checked out. */
         val buildCommit: Property<String>
@@ -171,7 +175,7 @@ abstract class GitCommitHashValueSource : ValueSource<String, GitCommitHashValue
         // read identically however long this repository's abbreviation happens to be.
         val head = capture("git", "rev-parse", "--short", "HEAD") ?: return "unknown"
 
-        if (!parameters.isCi.getOrElse(false)) {
+        if (parameters.ci.getOrElse("false") != "true") {
             val dirty = capture("git", "status", "--porcelain", "--untracked-files=no") != null
             return if (dirty) "$head+${hostname()}" else head
         }
@@ -200,14 +204,15 @@ val versionHashProvider =
         // `GITHUB_ACTIONS` is set on every runner and nowhere else; the stealth workflow no longer
         // passes a repository string at all. `VECTOR_BUILD_COMMIT` is the fallback for a workflow
         // that predates this flag — the only workflows that set it are ours.
-        parameters.isCi.set(
+        parameters.ci.set(
             providers
                 .environmentVariable("GITHUB_ACTIONS")
-                .map { it == "true" }
                 .orElse(
-                    providers.environmentVariable("VECTOR_BUILD_COMMIT").map { it.isNotBlank() }
+                    providers
+                        .environmentVariable("VECTOR_BUILD_COMMIT")
+                        .map { it.isNotBlank().toString() }
                 )
-                .orElse(false)
+                .orElse("false")
         )
         parameters.buildCommit.set(providers.environmentVariable("VECTOR_BUILD_COMMIT").orElse(""))
     }
