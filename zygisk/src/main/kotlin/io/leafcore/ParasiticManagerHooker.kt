@@ -132,7 +132,10 @@ object ParasiticManagerHooker {
         runCatching {
                 val clazz =
                     XposedHelpers.findClass(
-                        BuildConfig.ManagerPackageName + ".Constants",
+                        // `ManagerNamespace`, not `ManagerPackageName`: the manager is installed as
+                        // `io.leafcore.bridge` but its classes live under `io.leafcore.manager`, and
+                        // the id-versus-package split is invisible to the compiler (P14).
+                        BuildConfig.ManagerNamespace + ".Constants",
                         classLoader,
                     )
                 val ok =
@@ -244,7 +247,7 @@ object ParasiticManagerHooker {
                                 getManagerPkgInfo(arg.applicationInfo) ?: return@forEachIndexed
                             pkgInfo.activities
                                 ?.find {
-                                    it.name == BuildConfig.ManagerPackageName + ".ui.MainActivity"
+                                    it.name == BuildConfig.ManagerNamespace + ".ui.MainActivity"
                                 }
                                 ?.let {
                                     it.applicationInfo = pkgInfo.applicationInfo
@@ -255,7 +258,7 @@ object ParasiticManagerHooker {
                             arg.component =
                                 ComponentName(
                                     arg.component!!.packageName,
-                                    BuildConfig.ManagerPackageName + ".ui.MainActivity",
+                                    BuildConfig.ManagerNamespace + ".ui.MainActivity",
                                 )
                         }
                     }

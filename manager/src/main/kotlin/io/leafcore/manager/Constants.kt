@@ -8,7 +8,7 @@ import io.leafcore.manager.di.ServiceLocator
 /**
  * The one entry point the framework reaches by reflection.
  *
- * `ParasiticManagerHooker.sendBinderToManager` loads `<managerPackage>.Constants` out of the
+ * `ParasiticManagerHooker.sendBinderToManager` loads `<managerNamespace>.Constants` out of the
  * injected dex and invokes the static `setBinder(IBinder)` below. Nothing inside this APK calls it,
  * so R8 must be told to keep both — see `proguard-rules.pro`. Renaming this class or the method
  * breaks the handshake silently, at runtime, with no compile error anywhere.

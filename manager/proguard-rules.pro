@@ -1,5 +1,5 @@
 # The zygisk hooker reaches the manager entirely by reflection: it loads
-# "<managerPackage>.Constants" out of the injected dex and invokes the static
+# "<managerNamespace>.Constants" out of the injected dex and invokes the static
 # setBinder(IBinder) on it. Neither the class nor the method has a call site inside
 # this APK, so R8 would otherwise remove or rename both and the binder handshake
 # would fail silently at runtime.

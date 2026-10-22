@@ -31,6 +31,7 @@ val versionHashProvider = rootProject.extra["versionHashProvider"] as Provider<S
 val injectedPackageName = rootProject.extra["injectedPackageName"] as String
 val injectedPackageUid = rootProject.extra["injectedPackageUid"] as Int
 val defaultManagerPackageName = rootProject.extra["defaultManagerPackageName"] as String
+val defaultManagerNamespace = rootProject.extra["defaultManagerNamespace"] as String
 
 android {
     namespace = "io.leafcore"
@@ -40,6 +41,9 @@ android {
         buildConfigField("int", "HostPackageUid", "${injectedPackageUid}")
         buildConfigField("String", "InjectedPackageName", """"${injectedPackageName}"""")
         buildConfigField("String", "ManagerPackageName", """"${defaultManagerPackageName}"""")
+        // Reflection targets inside the manager (`ui.MainActivity`, `Constants`) hang off the
+        // namespace, not the application id. See `defaultManagerNamespace` in the root build file.
+        buildConfigField("String", "ManagerNamespace", """"${defaultManagerNamespace}"""")
 
         val flags =
             listOf(

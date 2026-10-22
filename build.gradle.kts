@@ -222,6 +222,16 @@ val injectedPackageName = "com.android.shell"
 val injectedPackageUid = 2000
 val defaultManagerPackageName = "io.leafcore.bridge"
 
+// The manager's application id and its Kotlin package are two different names on purpose: the id
+// is what the package manager shows and what survives an update in place, the package is where the
+// code lives. Anything that names a *class* inside the manager has to use this one.
+//
+// Getting that wrong is not a compile error anywhere: the zygisk side reaches into the manager by
+// reflection, so a name built from the application id (`io.leafcore.bridge.ui.MainActivity`,
+// `io.leafcore.bridge.Constants`) resolves to nothing at runtime. That is how the manager came to
+// crash on launch with ClassNotFoundException while every build stayed green (P14).
+val defaultManagerNamespace = "io.leafcore.manager"
+
 val androidTargetSdkVersion = 37
 val androidMinSdkVersion = 27
 val androidBuildToolsVersion = "37.0.0"
@@ -241,6 +251,8 @@ extra.set("injectedPackageName", injectedPackageName)
 extra.set("injectedPackageUid", injectedPackageUid)
 
 extra.set("defaultManagerPackageName", defaultManagerPackageName)
+
+extra.set("defaultManagerNamespace", defaultManagerNamespace)
 
 extra.set("androidTargetSdkVersion", androidTargetSdkVersion)
 
