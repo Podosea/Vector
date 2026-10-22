@@ -75,30 +75,22 @@ abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParamete
  * part is which, so none can get it wrong when a repository or a machine turns out to have a hyphen
  * in its name.
  *
- * The separator says which kind of "where" follows, because they mean opposite things about whether
- * the commit describes the binary:
+ * *On GitHub Actions*, the bare `93d66473` — the pushed commit, and nothing else. Upstream also
+ * stamps the repository it came from (`93d66473-owner-repo`) so a fork's artifact cannot pass for
+ * theirs; stealth drops that suffix on purpose, because a version string read off a device we own
+ * is the one place the upstream name must never appear (P10).
  *
- * *On GitHub Actions*, `93d66473-owner-repo` — the commit, then the repository the code came
- * from. Forks build the same code from the same commits, so the hash alone identifies a *revision*
- * and not a *build*, and a fork's artifact was indistinguishable from ours.
+ * The commit is read from `VECTOR_BUILD_COMMIT` rather than from the environment GitHub sets by
+ * default, because on a pull request `HEAD` names something other than the code that was built:
+ * the runner checks out an ephemeral merge of the branch into the base, so `git rev-parse HEAD`
+ * names a commit that exists in no repository, cannot be looked up by anyone who reads it off a
+ * device, and is gone once the run is. The commit that was pushed identifies the build.
  *
- * Both halves are the *head* ones, and neither is read from the environment GitHub sets by default,
- * because on a pull request both defaults name something other than the code that was built:
- *
- * `GITHUB_REPOSITORY` is the repository that *ran* the workflow. A pull request from a fork is
- * built here, so it would stamp `owner/repo` onto a branch that has never been near it —
- * which is exactly the artifact the name most needs to distinguish.
- *
- * `HEAD` is worse. For a pull request the runner checks out an ephemeral merge of the branch into
- * the base, so `git rev-parse HEAD` names a commit that exists in no repository, cannot be looked
- * up by anyone who reads it off a device, and is gone once the run is. The commit that was pushed
- * is the one that identifies the build.
- *
- * So the workflow passes both in: `VECTOR_BUILD_REPOSITORY` and `VECTOR_BUILD_COMMIT`, each taken
- * from `github.event.pull_request.head.*` when there is a pull request and from the ordinary
- * default when there is not — outside a pull request the two agree anyway. Absent either, this
- * falls back to what the environment says and to `HEAD`, which covers a workflow too old to set
- * them.
+ * Whether this is CI is decided by `GITHUB_ACTIONS`, **not** by whether a repository string was
+ * passed in. Those were the same question until the stealth workflow started blanking the
+ * repository variable to keep the upstream name out of the version — at which point every CI
+ * build answered "no" and fell through to the local branch below, stamping the runner's own host
+ * name onto the artifact as `a1b2c3d4+runnervm8k3b6`.
  *
  * *Locally*, the bare `93d66473`, or `93d66473+thinkpad` when the tree has uncommitted changes.
  * That build corresponds to no commit at all, so naming the commit alone would name something the
@@ -124,12 +116,12 @@ abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParamete
 abstract class GitCommitHashValueSource : ValueSource<String, GitCommitHashValueSource.Parameters> {
     interface Parameters : ValueSourceParameters {
         /**
-         * `owner/repo` when GitHub Actions is building this, empty otherwise.
+         * True when GitHub Actions is building this.
          *
          * Threaded in as parameters rather than read with `System.getenv` inside [obtain], which
          * the configuration cache does not see and therefore does not invalidate on.
          */
-        val buildRepository: Property<String>
+        val isCi: Property<Boolean>
 
         /** The full SHA that was pushed, when CI knows one and it is not what is checked out. */
         val buildCommit: Property<String>
@@ -179,8 +171,7 @@ abstract class GitCommitHashValueSource : ValueSource<String, GitCommitHashValue
         // read identically however long this repository's abbreviation happens to be.
         val head = capture("git", "rev-parse", "--short", "HEAD") ?: return "unknown"
 
-        val repository = parameters.buildRepository.getOrElse("")
-        if (repository.isBlank()) {
+        if (!parameters.isCi.getOrElse(false)) {
             val dirty = capture("git", "status", "--porcelain", "--untracked-files=no") != null
             return if (dirty) "$head+${hostname()}" else head
         }
@@ -206,14 +197,17 @@ abstract class GitCommitHashValueSource : ValueSource<String, GitCommitHashValue
 val versionCodeProvider = providers.of(GitCommitCountValueSource::class.java) {}
 val versionHashProvider =
     providers.of(GitCommitHashValueSource::class.java) {
-        // Set on every GitHub Actions runner and on nothing else, so the presence of either is
-        // the test for "this is a CI build". The workflow's own variables win because they name
-        // the branch that was pushed; GitHub's defaults name the run that built it.
-        parameters.buildRepository.set(
+        // `GITHUB_ACTIONS` is set on every runner and nowhere else; the stealth workflow no longer
+        // passes a repository string at all. `VECTOR_BUILD_COMMIT` is the fallback for a workflow
+        // that predates this flag — the only workflows that set it are ours.
+        parameters.isCi.set(
             providers
-                .environmentVariable("VECTOR_BUILD_REPOSITORY")
-                .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
-                .orElse("")
+                .environmentVariable("GITHUB_ACTIONS")
+                .map { it == "true" }
+                .orElse(
+                    providers.environmentVariable("VECTOR_BUILD_COMMIT").map { it.isNotBlank() }
+                )
+                .orElse(false)
         )
         parameters.buildCommit.set(providers.environmentVariable("VECTOR_BUILD_COMMIT").orElse(""))
     }

@@ -12,8 +12,9 @@ jobs:
     permissions:
       contents: read
     env:
-      # 显式置空，避免回落到 GITHUB_REPOSITORY 把上游仓库名拼进版本串。
-      VECTOR_BUILD_REPOSITORY: ""
+      # 版本串只带 pushed commit：从 P11 起「是不是 CI」由 GITHUB_ACTIONS 判定，不再靠
+      # 仓库串是否为空——那条判据被置空后会把每个 CI 构建都当成本地构建，从而把 runner
+      # 主机名（runnervm8k3b6）当成本地机器名拼进 module.prop。
       VECTOR_BUILD_COMMIT: ${{ github.sha }}
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
