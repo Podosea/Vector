@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -95,12 +94,15 @@ fun WingedVictory() {
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            painter = painterResource(id = R.drawable.ic_winged_victory),
+            painter = painterResource(id = R.drawable.ic_mark),
             contentDescription = null,
-            tint = Color.Unspecified,
-            // The drawable is a 108dp square whose figure runs nearly the full height of its
-            // viewport, so it is given 92% of both dimensions and fitted inside — which keeps its
-            // proportions in portrait and landscape without stretching or clipping.
+            // The mark is one flat colour, so it is tinted with the theme's own foreground instead
+            // of being drawn as-is: the drawable's near-white is what the launcher tile needs, and
+            // on a light-theme background that same near-white would be invisible.
+            tint = MaterialTheme.colorScheme.onBackground,
+            // The drawable is a 108dp square whose mark runs from 26 to 82 of that viewport, so it
+            // is given 92% of both dimensions and fitted inside — which keeps its proportions in
+            // portrait and landscape without stretching or clipping.
             modifier = Modifier.fillMaxSize(0.92f).scale(scale).alpha(alpha),
         )
     }

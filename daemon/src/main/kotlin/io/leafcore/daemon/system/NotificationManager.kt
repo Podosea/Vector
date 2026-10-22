@@ -113,7 +113,7 @@ object NotificationManager {
   }
 
   private fun getNotificationIcon(): Icon {
-    return Icon.createWithBitmap(getBitmap(R.drawable.ic_statue_monochrome))
+    return Icon.createWithBitmap(getBitmap(R.drawable.ic_mark))
   }
 
   fun notifyStatusNotification() {

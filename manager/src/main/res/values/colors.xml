@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Default background (White) -->
-    <color name="ic_launcher_bg">#FFFFFF</color>
+    <!--
+      Graphite, not white. The launcher icon is the manager's only visible surface now that the
+      status notification is off by default (FRAMEWORK-STEALTH §7.5), and a white tile among a
+      drawer of white tiles is the one thing that would make it stand out; a dark tile reads as
+      "some utility" and stops there. The mark on top is near-white (#EDEDED, in ic_mark.xml), so
+      contrast holds at both values.
+    -->
+    <color name="ic_launcher_bg">#2B3034</color>
 </resources>

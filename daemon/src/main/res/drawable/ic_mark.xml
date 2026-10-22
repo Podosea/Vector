@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The manager's only visual mark: a thin diamond ring with a solid diamond at its centre.
+
+  It replaces the Winged Victory, and the reason is not taste. The launcher icon is now the
+  single entry point (FRAMEWORK-STEALTH §7.5), so it is the one piece of this project a person
+  standing next to the phone can identify: a statue that exists nowhere else in the app drawer is
+  a fingerprint that survives every other neutralisation in §4. A shape with no owner does not.
+
+  Kept deliberately small in code and geometry — two subpaths and a dot, in a 108 viewport, inside
+  the 66dp adaptive-icon safe zone (outer ring 28..80, i.e. half-diagonal 26 against a safe radius
+  of 33) — because this drawable is used at three very different sizes: the adaptive foreground,
+  the themed-icon monochrome layer (alpha only, so the colour here is ignored by the system), and
+  the status-bar bitmap via the daemon. Detail that only survives at one of those sizes is detail
+  that looks like dirt at the other two.
+
+  The ring is thin on purpose: outer half-diagonal 26 against inner 18 leaves a band of eight
+  units on the axis, which is about 3.5px on a 48dp home-screen icon and still a line rather than
+  a blob on a 24px status-bar bitmap. The dot (47..61) sits 11 units clear of the ring on every
+  side, so the three shapes never fuse into one silhouette at small sizes.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#EDEDED"
+        android:fillType="evenOdd"
+        android:pathData="M54,28 L80,54 L54,80 L28,54 Z M54,36 L72,54 L54,72 L36,54 Z" />
+
+    <path
+        android:fillColor="#EDEDED"
+        android:pathData="M54,47 L61,54 L54,61 L47,54 Z" />
+
+</vector>

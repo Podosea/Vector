@@ -37,8 +37,9 @@ import kotlin.math.sin
 object SeedScheme {
 
     /**
-     * The Winged Victory's patina — the deepest of the eight tones in `ic_winged_victory.xml` — and
-     * the app's identity colour when nothing else is chosen.
+     * The patina the old icon was built from, kept as the app's identity colour now that the icon
+     * itself is a neutral mark (see `ic_mark.xml`): a colour is not a fingerprint, and a palette
+     * that changes under the user is a worse trade than a hue with a history.
      */
     const val DEFAULT_SEED: Int = 0xFF6ABFCF.toInt()
 

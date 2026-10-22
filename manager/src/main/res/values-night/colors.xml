@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark Mode background -->
-    <color name="ic_launcher_bg">#121212</color>
+    <!-- Dark Mode background — a shade deeper than the light-mode tile so the icon still looks
+         deliberate on a dark drawer rather than like a hole in it. -->
+    <color name="ic_launcher_bg">#1B1F22</color>
 </resources>

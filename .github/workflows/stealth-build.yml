@@ -131,6 +131,18 @@ jobs:
             if strings "$f" | grep -q "lsposed\.org"; then echo "::error::商店域名残留于 $f"; fail=1; fi
           done
 
+          # FAIL 5: the old icon's identifiers. The launcher icon is this project's most public
+          # surface — it is the one thing standing next to the phone can identify — and deleting
+          # the drawable is not enough, because its name survives in resources.arsc and a
+          # decompiler reads it. `resources.arsc` is stored uncompressed in an apk, which is why
+          # this greps it directly instead of grepping the zip, whose entries are deflated.
+          for f in /tmp/scan/manager.apk /tmp/scan/daemon.apk; do
+            [ -f "$f" ] || continue
+            if unzip -p "$f" resources.arsc 2>/dev/null | strings | grep -qiE "winged|samothrace|statue"; then
+              echo "::error::品牌图标标识残留于 $f"; fail=1
+            fi
+          done
+
           # WARN: expected to be present forever — the Xposed API contract modules compile against.
           if strings /tmp/scan/framework/core.dex | grep -q "de/robv/android/xposed"; then
             echo "::notice::de.robv.android.xposed 存在（模块兼容性契约，预期）"

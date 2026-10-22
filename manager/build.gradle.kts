@@ -98,9 +98,10 @@ android {
         buildConfigField("String", "TRANSLATIONS", "\"${translations.joinToString(",")}\"")
     }
 
-    // ic_launcher.xml references @drawable/ic_statue_monochrome, which lives in the
-    // daemon's resources. Any name collision between the two resource sets becomes a
-    // build error, so keep additions on the daemon side namespaced.
+    // ic_launcher.xml references @drawable/ic_mark, which lives in the daemon's resources
+    // (the mark is drawn once and shared by the launcher icon, the themed layer, the splash and
+    // the status-bar icon). Any name collision between the two resource sets becomes a build
+    // error, so keep additions on the daemon side namespaced.
     sourceSets { getByName("main") { res.directories.add("../daemon/src/main/res") } }
 
     packaging {
