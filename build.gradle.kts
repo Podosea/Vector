@@ -283,7 +283,10 @@ subprojects {
                 val flags =
                     listOf(
                         "-DVERSION_CODE=${versionCodeProvider.get()}",
-                        "-DVERSION_NAME='\"${versionNameProvider.get()}\"'",
+                        // A bare token; `common/config.h` stringifies it. Wrapping it in quotes
+                        // here cannot be made to work on both platforms at once -- see the note
+                        // on kVersionName in that header.
+                        "-DVERSION_NAME=${versionNameProvider.get()}",
                         // parallel_hashmap reaches for <emmintrin.h> whenever __SSE2__ is defined,
                         // and that header's static inline intrinsics arrive twice on the x86 ABIs:
                         // dex_builder.ixx and dex_helper.ixx each include phmap in their global

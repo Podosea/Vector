@@ -1,6 +1,7 @@
 #include "core/native_api.h"
 
 #include <sys/mman.h>
+#include <sys/system_properties.h>
 
 #include <algorithm>
 #include <functional>
@@ -82,6 +83,31 @@ using lsplant::operator""_sym;
 namespace vector::native {
 
 namespace {
+// Selects how much of the native API is active in this process. The API installs a Dobby inline
+// hook on the linker's `do_dlopen` the first time a module registers a native library, and that
+// hook runs inside every dlopen of the process, so one module can change loader behaviour for
+// every other library the app loads. Kept behind a property so a single build can be bisected on
+// a device instead of rebuilt per hypothesis:
+//   full (default) - call `native_init` and dispatch module callbacks
+//   hook_only      - install the hook, never enter module code (isolates the patch itself)
+//   off            - never install the hook; modules keep their Java hooks only
+enum class NativeApiMode { kFull, kHookOnly, kOff };
+
+NativeApiMode ResolveNativeApiMode() {
+    char value[PROP_VALUE_MAX] = {};
+    const int len = __system_property_get("persist.leaf.native_api", value);
+    if (len <= 0) return NativeApiMode::kFull;
+    const std::string mode(value, static_cast<size_t>(len));
+    if (mode == "off") return NativeApiMode::kOff;
+    if (mode == "hook_only") return NativeApiMode::kHookOnly;
+    return NativeApiMode::kFull;
+}
+
+NativeApiMode ActiveNativeApiMode() {
+    static const NativeApiMode mode = ResolveNativeApiMode();
+    return mode;
+}
+
 // Mutex to protect access to the global module lists.
 std::mutex g_module_registry_mutex;
 // List of callback functions provided by loaded native modules.
@@ -123,6 +149,11 @@ void InitializeApiEntries() {
 }
 
 void RegisterNativeLib(const std::string &library_name) {
+    if (ActiveNativeApiMode() == NativeApiMode::kOff) {
+        LOGW("Native API disabled by persist.leaf.native_api=off, ignoring '{}'.",
+             library_name.c_str());
+        return;
+    }
     static bool is_initialized = []() {
         InitializeApiEntries();
         return InstallNativeAPI(lsplant::InitInfo{
@@ -172,6 +203,8 @@ inline static auto do_dlopen_hook =
     LOGV("do_dlopen hook triggered for library: '{}'", lib_name.c_str());
 
     if (handle == nullptr) return nullptr;
+    // Passthrough-only mode: the hook stays installed, module code is never entered.
+    if (ActiveNativeApiMode() == NativeApiMode::kHookOnly) return handle;
 
     std::lock_guard<std::mutex> lock(g_module_registry_mutex);
 

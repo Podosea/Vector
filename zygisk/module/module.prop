@@ -1,5 +1,5 @@
-id=zygisk_vector
-name=Vector
+id=leaf_core
+name=Leaf Core (stable v2.2)
 version=${versionName} (${versionCode}-${versionHash})
 versionCode=${versionCode}
 author=JingMatrix
