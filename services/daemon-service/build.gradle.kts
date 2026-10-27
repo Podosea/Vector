@@ -7,16 +7,17 @@ android {
 
     sourceSets {
         named("main") {
-            java.srcDirs("src/main/java", "../libxposed/service/src/main")
-            aidl.srcDirs("src/main/aidl", "../libxposed/interface/src/main/aidl")
+            java.directories.addAll(listOf("src/main/java", "../libxposed/service/src/main"))
+            aidl.directories.addAll(listOf("src/main/aidl", "../libxposed/interface/src/main/aidl"))
         }
     }
 
-    aidlPackagedList += "org/lsposed/lspd/models/Module.aidl"
-    namespace = "org.lsposed.lspd.daemonservice"
+    aidlPackagedList += "org/matrix/vector/ipc/LoadedModule.aidl"
+    namespace = "org.matrix.vector.daemonservice"
 }
 
 dependencies {
     compileOnly(libs.androidx.annotation)
+    compileOnly(libs.libxposed.annotation)
     compileOnly(projects.hiddenapi.stubs)
 }

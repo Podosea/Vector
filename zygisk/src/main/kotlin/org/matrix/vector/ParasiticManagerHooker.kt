@@ -18,21 +18,24 @@ import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import hidden.HiddenApiBridge
+import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
-import org.lsposed.lspd.ILSPManagerService
-import org.lsposed.lspd.util.Utils
+import org.matrix.vector.ipc.IManagerService
+import org.matrix.vector.util.Utils
 import org.matrix.vector.impl.core.VectorServiceClient
 
-/** The "Parasite" logic. Injects the LSPosed Manager APK into a host process (shell). */
+/** The "Parasite" logic. Injects the manager APK into a host process (shell). */
 @SuppressLint("StaticFieldLeak")
 object ParasiticManagerHooker {
     private const val CHROMIUM_WEBVIEW_FACTORY_METHOD = "create"
 
     private var managerPkgInfo: PackageInfo? = null
     private var managerFd: Int = -1
+
+    var isParasitic = false
 
     // Manually track Activity states since the system is unaware of our spoofed activities
     private val states = ConcurrentHashMap<String, Bundle>()
@@ -63,7 +66,10 @@ object ParasiticManagerHooker {
                     // contexts.
                     // We copy the APK to the host's cache as a workaround.
                     if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                        val dstPath = "${appInfo.dataDir}/cache/lsposed.apk"
+                        // The pre-rename name, removed so an upgraded host is not left carrying a
+                        // stale copy of the manager in its cache forever.
+                        runCatching { File("${appInfo.dataDir}/cache/lsposed.apk").delete() }
+                        val dstPath = "${appInfo.dataDir}/cache/vector-manager.apk"
                         runCatching {
                                 FileInputStream(sourcePath).use { input ->
                                     FileOutputStream(dstPath).use { output ->
@@ -141,10 +147,38 @@ object ParasiticManagerHooker {
                     ) as Boolean
                 if (!ok) throw RuntimeException("setBinder returned false")
             }
-            .onFailure { Utils.logW("Could not send binder to LSPosed Manager", it) }
+            .onFailure { Utils.logW("Could not send binder to the manager", it) }
     }
 
-    private fun hookForManager(managerService: ILSPManagerService) {
+    /**
+     * Drops any [LoadedApk] the process already holds for [packageName].
+     *
+     * Some OEM ROMs, reported on HarmonyOS, pre-warm the host process, so a `LoadedApk` built from
+     * the stock host APK can already be cached when `bindApplication` arrives.
+     * `ActivityThread#getPackageInfo` would then return that instance and keep its original
+     * `ApplicationInfo`: its only repair path is guarded by `isLoadedApkResourceDirsUpToDate`,
+     * which compares nothing but the resource and overlay directories, and those we copy from the
+     * host in [getManagerPkgInfo]. The manager's `sourceDir` would never be picked up.
+     *
+     * A freshly forked process has an empty cache, which makes this a no-op on most devices. The
+     * warning below is therefore also the only evidence that such pre-warming is real.
+     */
+    private fun evictCachedLoadedApk(packageName: String) {
+        runCatching {
+                val at = ActivityThread.currentActivityThread()
+                for (field in arrayOf("mPackages", "mResourcePackages")) {
+                    val cache = XposedHelpers.getObjectField(at, field) as? ArrayMap<*, *>
+                    if (cache == null) {
+                        Utils.logW("ActivityThread#$field is not an ArrayMap, not evicting")
+                    } else if (cache.remove(packageName) != null) {
+                        Utils.logW("Evicted a pre-cached LoadedApk of $packageName from $field")
+                    }
+                }
+            }
+            .onFailure { logE("Failed to evict the cached LoadedApk of $packageName", it) }
+    }
+
+    private fun hookForManager(managerService: IManagerService) {
         // Hook 1: Swap ApplicationInfo during host binding
         XposedHelpers.findAndHookMethod(
             ActivityThread::class.java,
@@ -156,7 +190,8 @@ object ParasiticManagerHooker {
                     val bindData = param.args[0]
                     val hostAppInfo =
                         XposedHelpers.getObjectField(bindData, "appInfo") as ApplicationInfo
-                    val parasiticInfo = getManagerPkgInfo(hostAppInfo)?.applicationInfo
+                    val parasiticInfo = getManagerPkgInfo(hostAppInfo)?.applicationInfo ?: return
+                    evictCachedLoadedApk(hostAppInfo.packageName)
                     XposedHelpers.setObjectField(bindData, "appInfo", parasiticInfo)
                 }
             },
@@ -212,8 +247,7 @@ object ParasiticManagerHooker {
                                 getManagerPkgInfo(arg.applicationInfo) ?: return@forEachIndexed
                             pkgInfo.activities
                                 ?.find {
-                                    it.name ==
-                                        BuildConfig.ManagerPackageName + ".ui.activity.MainActivity"
+                                    it.name == BuildConfig.ManagerPackageName + ".ui.MainActivity"
                                 }
                                 ?.let {
                                     it.applicationInfo = pkgInfo.applicationInfo
@@ -224,7 +258,7 @@ object ParasiticManagerHooker {
                             arg.component =
                                 ComponentName(
                                     arg.component!!.packageName,
-                                    BuildConfig.ManagerPackageName + ".ui.activity.MainActivity",
+                                    BuildConfig.ManagerPackageName + ".ui.MainActivity",
                                 )
                         }
                     }
@@ -444,12 +478,35 @@ object ParasiticManagerHooker {
     /** Entry point. Checks if the current process should host the parasitic manager. */
     @JvmStatic
     fun start(): Boolean {
-        val binderList = mutableListOf<IBinder>()
         return try {
-            VectorServiceClient.requestInjectedManagerBinder(binderList)!!.use { pfd ->
-                managerFd = pfd.detachFd()
-                val managerService = ILSPManagerService.Stub.asInterface(binderList[0])
-                hookForManager(managerService)
+            // Asked first: a process the daemon did not launch the manager into gets null here,
+            // and there is no point opening the APK for it.
+            val managerBinder = VectorServiceClient.requestManagerService() ?: return false
+            VectorServiceClient.openManagerApk()!!.use { pfd ->
+                val managerService = IManagerService.Stub.asInterface(managerBinder)
+
+                if (isParasitic) {
+                    managerFd = pfd.detachFd()
+                    hookForManager(managerService)
+                } else {
+                    XposedHelpers.findAndHookMethod(
+                        LoadedApk::class.java,
+                        "getClassLoader",
+                        object : XC_MethodHook() {
+                            override fun afterHookedMethod(param: MethodHookParam<*>) {
+                                val mAppInfo =
+                                    XposedHelpers.getObjectField(
+                                        param.thisObject,
+                                        "mApplicationInfo",
+                                    ) as ApplicationInfo
+                                if (mAppInfo.packageName == BuildConfig.ManagerPackageName) {
+                                    val classLoader = param.result as ClassLoader
+                                    sendBinderToManager(classLoader, managerService.asBinder())
+                                }
+                            }
+                        },
+                    )
+                }
                 Utils.logD("Vector manager injected successfully into process.")
                 true
             }

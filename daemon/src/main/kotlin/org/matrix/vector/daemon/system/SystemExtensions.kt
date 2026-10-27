@@ -20,6 +20,15 @@ import org.matrix.vector.daemon.utils.getRealUsers
 
 private const val TAG = "VectorSystem"
 const val PER_USER_RANGE = 100000
+
+/**
+ * The first uid handed to an installed app, as `android.os.Process.FIRST_APPLICATION_UID`.
+ *
+ * Below it are the AID_* uids, which carry no user component and are the same process for the whole
+ * device however many users exist. Above it, a uid is `user * PER_USER_RANGE + appId`, so dividing
+ * by [PER_USER_RANGE] is only a user test for uids on this side of the line.
+ */
+const val FIRST_APPLICATION_UID = 10000
 const val MATCH_ANY_USER = 0x00400000 // PackageManager.MATCH_ANY_USER
 const val MATCH_ALL_FLAGS =
     PackageManager.MATCH_DISABLED_COMPONENTS or
@@ -307,6 +316,34 @@ fun IActivityManager.broadcastIntentCompat(intent: Intent) {
         }
       }
       .onFailure { Log.e(TAG, "broadcastIntent failed", it) }
+}
+
+// `startActivityAsUserWithFeature` only arrived in Android R: on older platforms the same call
+// exists without the calling feature id, and using the newer one throws `NoSuchMethodError`.
+fun IActivityManager.startActivityAsUserCompat(intent: Intent, userId: Int): Int {
+  val appThread = SystemContext.appThread
+  return runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          startActivityAsUserWithFeature(
+              appThread,
+              "android",
+              null,
+              intent,
+              intent.type,
+              null,
+              null,
+              0,
+              0,
+              null,
+              null,
+              userId)
+        } else {
+          startActivityAsUser(
+              appThread, "android", intent, intent.type, null, null, 0, 0, null, null, userId)
+        }
+      }
+      .onFailure { Log.e(TAG, "startActivityAsUser failed", it) }
+      .getOrDefault(-1)
 }
 
 fun IUserManager.getUserName(userId: Int): String {

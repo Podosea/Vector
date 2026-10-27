@@ -62,7 +62,12 @@ object VectorDaemon {
     }
 
     Log.i(TAG, "Vector daemon started: lateInject=$isLateInject, proxy=$proxyServiceName")
-    Log.i(TAG, "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+    // The hash is here rather than in the version the manager prints: Home should stay readable,
+    // but every saved bug report should say exactly which commit produced the daemon that wrote it.
+    Log.i(
+        TAG,
+        "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) " +
+            "commit ${BuildConfig.VERSION_HASH}")
 
     Thread.setDefaultUncaughtExceptionHandler { _, e ->
       Log.e(TAG, "Uncaught exception in Daemon", e)
@@ -74,7 +79,7 @@ object VectorDaemon {
     @Suppress("DEPRECATION") Looper.prepareMainLooper()
 
     // Squat on the proxy service name immediately, which creates the early IPC channel of
-    // ApplicationService for our Zygisk module during system_server specialization.
+    // FrameworkService for our Zygisk module during system_server specialization.
     SystemServerService.registerProxyService(proxyServiceName)
 
     // Start Environmental Daemons
@@ -97,10 +102,17 @@ object VectorDaemon {
 
     applyNotificationWorkaround()
 
+    // Read this before `sendToBridge`, which leaves the main thread at euid 1000: the config
+    // database lives under a directory only root can enter, so the first process to open it has
+    // to do so while we still have root. On a successful injection a binder thread opens it for
+    // us during specialization, but when the injection fails nothing else has, and the daemon
+    // used to die here on an unreadable preference.
+    val isVerboseLog = ManagerService.isVerboseLogEnabled()
+
     // Setup IPC channel for applications by injecting DaemonService binder
     sendToBridge(VectorService.asBinder(), false, systemServerMaxRetry)
 
-    if (!ManagerService.isVerboseLog()) {
+    if (!isVerboseLog) {
       LogcatMonitor.stopVerbose()
     }
 
@@ -216,6 +228,22 @@ object VectorDaemon {
           }
         }
         .onFailure { Log.w(TAG, "Failed to clear system caches via reflection", it) }
+  }
+
+  /**
+   * Brings the framework down and up without rebooting the device.
+   *
+   * `system_server` is forked from the *primary* zygote, so restarting that is what restarts the
+   * framework — on a 64/32 device the primary init service is still called `zygote` (it runs
+   * app_process64) and `zygote_secondary` is the 32-bit one. Restarting the secondary leaves
+   * system_server running, which is right for [restartSystemServer]'s own purpose and wrong for
+   * this one; they are separate functions for that reason.
+   *
+   * Everything on screen dies with it. The caller is expected to have said so first.
+   */
+  fun softReboot() {
+    Log.w(TAG, "Soft reboot: restarting the primary zygote")
+    SystemProperties.set("ctl.restart", "zygote")
   }
 
   fun restartSystemServer() {

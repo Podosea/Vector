@@ -1,16 +1,21 @@
-🎉 **Release: Vector 2.0** 🎉
+Vector 2.2 is a hotfix for 2.1, and it brings libxposed API 102 — where a module can be swapped out without taking the process down with it.
 
-Welcome to Vector 2.0! As part of our ongoing transition, the project has officially been renamed from `LSPosed` to `Vector`. While our major internal refactoring is still underway, we are releasing 2.0 now to provide a stable, feature-complete environment for those relying on legacy libxposed APIs.
+> [!IMPORTANT]
+> If you installed the manager as a separate app, uninstall it before updating: a 2.1 manager cannot talk to a 2.2 daemon. A parasitic manager needs nothing.
 
-### 📚 libxposed API 100 & 101
-With the recent publication of libxposed API 101, the ecosystem is moving toward a new standard with significant breaking changes. Because API 100 was never officially published, **Vector 2.0 serves as the definitive implementation of the API 100 era**, built from the exact commit prior to the API 101 jump.
+### 🩹 What 2.1 got wrong
+*   🪝 **No hooks in release builds.** Modules loaded, and then nothing happened. R8 had merged `XResources` into a shared class that `XposedHelpers.findClass` touches on its way in, and `XResources` cannot resolve until the device has generated its super class. One failure is permanent, so every `findClass` in `system_server` failed for the rest of the boot.
+*   🔗 **Canaries installed the wrong build.** Press install on a canary, get the newest release. The page is rebuilt around the builds themselves: each row a head commit, with its author, its pull request, and the issues closed since the build you are running.
 
-### 🏗️ Architecture & API Updates
-*   **Vector & Zygisk Overhaul:** Officially renamed and modularized the project, featuring a completely rewritten, modern Zygisk architecture.
-*   **API 100 Finalization:** Completed all remaining libxposed API 100 features, including comprehensive support for static initializers, constructor hooking, and centralized logging.
+### 🔁 libxposed API 102
+Hot reload — a module's code replaced inside a process that is already running it. No more killing every process you are injected into to try a change, and no more reboot when the module hooks the system, taking with it the state you were trying to reproduce. Updates can reach processes still running the old code, if the module agrees to it. Around that: an entry class can step out of lifecycle callbacks while its siblings carry on, hookers swap atomically, and a module targeting 102 leaves the legacy API alone.
 
+### 👥 One module, one configuration
+A module is one package and one binary for the whole device, so its configuration belongs to the package; only its presence varies per user. Nothing enforced that, and a module installed in one user could run inside another user's applications. It now runs only in the users that installed it — `system_server` excepted, since it belongs to none of them.
 
-### ⚙️ Core Engine & System Enhancements
-*   🔓 **Bypassed Bionic `LD_PRELOAD` Restrictions:** Resolved fatal namespace errors on Android 10 by loading the `dex2oat` hook library via a `memfd_create` tmpfs-backed file descriptor, bypassing the linker's namespace checks.
-*   🛡️ **Reflection Parity Overhaul:** Completely rebuilt the `invokeSpecialMethod` backend to improve performance, enhance robustness, and mirror standard Java reflection behavior.
-*   ⏱️ **Late Injection Standalone Launch:** Added native support for manual late injection (triggered by NeoZygisk), without relying on Magisk's early-init phase—highly useful for AOSP debug builds.
+### 🧹 Everything else
+The IPC interfaces moved into Vector's own namespace, and the refactor shook out a run of unrelated bugs: JNI exceptions left pending across the native boundary, one of which left a process without Xposed while the log announced success; "Install as an app" going green for a copy that was a different build; an unbounded wait on a binder thread; a health flag latched before the work it reports. And the monochrome icon now carries the statue's own line work, so the themed launcher icon finally says what it is.
+
+---
+
+*The two fixes at the top exist because you reported them. Thank you — please keep telling us what breaks.*

@@ -45,7 +45,15 @@ inline constexpr auto kLinkerPath = "/linker";
 /// The version code of the library, populated by the build system.
 const int kVersionCode = VERSION_CODE;
 
+// The build system hands the version over as a bare token (`-DVERSION_NAME=2.2`) instead of as a
+// string literal, because the quoting that would make it a literal does not survive every path
+// from Gradle to the compiler: POSIX ninja runs each command through a shell that strips the
+// quotes, while Windows ninja execs the compiler directly and the quotes reach the preprocessor,
+// where `'"2.2"'` becomes a multi-character constant. Stringifying here is equivalent for both.
+#define VECTOR_STRINGIFY_IMPL(x) #x
+#define VECTOR_STRINGIFY(x) VECTOR_STRINGIFY_IMPL(x)
+
 /// The version name of the library, populated by the build system.
-const char *const kVersionName = VERSION_NAME;
+const char *const kVersionName = VECTOR_STRINGIFY(VERSION_NAME);
 
 }  // namespace vector::native

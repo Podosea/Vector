@@ -229,7 +229,8 @@ void IPCBridge::Initialize(JNIEnv *env) {
     initialized_ = true;
 }
 
-lsplant::ScopedLocalRef<jobject> IPCBridge::RequestAppBinder(JNIEnv *env, jstring nice_name) {
+lsplant::ScopedLocalRef<jobject> IPCBridge::RequestAppBinder(JNIEnv *env, jstring nice_name,
+                                                             int *nativeApiMode) {
     if (!initialized_) {
         LOGE("RequestAppBinder failed: IPCBridge not initialized.");
         return {env, nullptr};
@@ -284,15 +285,22 @@ lsplant::ScopedLocalRef<jobject> IPCBridge::RequestAppBinder(JNIEnv *env, jstrin
             result_binder =
                 lsplant::JNI_CallObjectMethod(env, parcels.reply.get(), read_strong_binder_method_);
             if (result_binder) {
+                // The daemon appends the per-process native API mode (NativeApiPolicy) after the
+                // binder. readInt on an exhausted parcel answers 0, which is the "undecided"
+                // wire value, so a peer that predates the field degrades to the prop fallback.
+                if (nativeApiMode) {
+                    *nativeApiMode = lsplant::JNI_CallIntMethod(env, parcels.reply.get(),
+                                                                read_int_method_);
+                }
                 // IMPORTANT: Keep the heartbeat binder alive by making it a global ref.
                 // If we don't do this, it gets garbage collected and the remote service
                 // thinks our process has died.
                 env->NewGlobalRef(heartbeat_binder.get());
             }
         }
-    } else {
-        LOGD("Transact call to request app binder failed.");
     }
+    // No else: a false transaction is the daemon declining, which is the ordinary answer for a
+    // process no module has in scope. The caller logs that outcome, with the process name.
 
     return result_binder;
 }
@@ -476,8 +484,11 @@ jboolean IPCBridge::ExecTransact_Replace(jboolean *res, JNIEnv *env, jobject obj
         if (*res == JNI_FALSE) {
             uint64_t caller_id = BinderCaller::GetId();
             if (caller_id != 0) {
+                // LOGV("Caller {} rejected by bridge service.", caller_id);
                 g_last_failed_id.store(caller_id, std::memory_order_relaxed);
             }
+        } else {
+            g_last_failed_id.store(~0, std::memory_order_relaxed);
         }
         return true;  // Return true to indicate we handled the call.
     }
@@ -486,23 +497,17 @@ jboolean IPCBridge::ExecTransact_Replace(jboolean *res, JNIEnv *env, jobject obj
 
 jboolean JNICALL IPCBridge::CallBooleanMethodV_Hook(JNIEnv *env, jobject obj, jmethodID methodId,
                                                     va_list args) {
-    uint64_t current_caller_id = BinderCaller::GetId();
-    if (current_caller_id != 0) {
-        uint64_t last_failed = g_last_failed_id.load(std::memory_order_relaxed);
-        // If this caller is the one that just failed,
-        // skip interception and go straight to the original function.
-        if (current_caller_id == last_failed) {
-            // We "consume" the failed state by resetting it, so the *next* call is not skipped.
-            g_last_failed_id.store(~0, std::memory_order_relaxed);
-            return GetInstance().call_boolean_method_v_backup_(env, obj, methodId, args);
-        }
-    }
-
     // Check if the method being called is the one we want to intercept: Binder.execTransact()
     if (methodId == GetInstance().exec_transact_backup_method_id_) {
+        uint64_t current_caller_id = BinderCaller::GetId();
+
         jboolean res = false;
         // Attempt to handle the transaction with our replacement logic.
-        if (ExecTransact_Replace(&res, env, obj, args)) {
+        if (current_caller_id != 0 &&
+            // If this caller is the one that just failed,
+            // skip interception and go straight to the original function.
+            current_caller_id != g_last_failed_id.load(std::memory_order_relaxed) &&
+            ExecTransact_Replace(&res, env, obj, args)) {
             return res;  // If we handled it, return the result directly.
         }
         // If not handled, fall through to call the original method.

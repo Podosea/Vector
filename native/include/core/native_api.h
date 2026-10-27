@@ -112,6 +112,19 @@ bool InstallNativeAPI(const lsplant::HookHandler &handler);
 void RegisterNativeLib(const std::string &library_name);
 
 /**
+ * @brief Records the native API mode the daemon decided for this process.
+ *
+ * Called by the Zygisk entry during preAppSpecialize with the value carried in the GET_BINDER
+ * reply (0 = no decision, 1 = full, 2 = hook_only, 3 = off; the wire protocol lives in the
+ * daemon's NativeApiPolicy). Must be called before any module code runs, which specialization
+ * ordering guarantees. An undecided value makes every consumer fall through to the diagnostic
+ * `persist.leaf.native_api` property.
+ *
+ * @param mode The daemon-delivered mode constant for this process.
+ */
+void SetDeliveredMode(int mode);
+
+/**
  * @brief A wrapper around DobbyHook.
  */
 inline int HookInline(void *original, void *replace, void **backup) {

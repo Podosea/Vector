@@ -10,32 +10,45 @@ import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.provider.Telephony
 import android.telephony.TelephonyManager
 import android.util.Log
 import hidden.HiddenApiBridge
 import io.github.libxposed.service.IXposedScopeCallback
 import kotlinx.coroutines.launch
-import org.lsposed.lspd.service.IDaemonService
-import org.lsposed.lspd.service.ILSPApplicationService
+import org.matrix.vector.ipc.ScopeEntry
+import org.matrix.vector.ipc.IVectorDaemon
+import org.matrix.vector.ipc.IFrameworkService
 import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.ModuleDatabase
+import org.matrix.vector.daemon.data.NativeApiPolicy
 import org.matrix.vector.daemon.data.PreferenceStore
 import org.matrix.vector.daemon.data.ProcessScope
-import org.matrix.vector.daemon.ipc.ApplicationService
+import org.matrix.vector.daemon.ipc.FrameworkService
 import org.matrix.vector.daemon.ipc.ManagerService
-import org.matrix.vector.daemon.ipc.ModuleService
+import org.matrix.vector.daemon.ipc.ModuleAppService
 import org.matrix.vector.daemon.system.*
 
 private const val TAG = "VectorService"
 
-object VectorService : IDaemonService.Stub() {
+object VectorService : IVectorDaemon.Stub() {
 
   private var bootCompleted = false
-  @Suppress("DEPRECATION")
+
+  /**
+   * What the dialer broadcasts when a secret code is entered, which changed name in Q.
+   *
+   * The pre-Q action is spelled out rather than taken from `Telephony.Sms.Intents`, whose constant
+   * only became public API in 28 while this daemon runs from 27. It is the same string either way:
+   * on 8.1 the platform broadcast it from the hidden `TelephonyIntents.SECRET_CODE_ACTION`, which
+   * carries exactly this value, and the public constant that followed was deprecated in 29 when
+   * `TelephonyManager.ACTION_SECRET_CODE` replaced it.
+   */
   private val ACTION_SECRET_CODE =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) TelephonyManager.ACTION_SECRET_CODE
-      else Telephony.Sms.Intents.SECRET_CODE_ACTION
+      else "android.provider.Telephony.SECRET_CODE"
+
+  /** Dial *#*#832867#*#* ("VECTOR" on the keypad) to open the manager. */
+  private const val SECRET_CODE = "832867"
 
   override fun dispatchSystemServerContext(
       appThread: IBinder?,
@@ -53,17 +66,22 @@ object VectorService : IDaemonService.Stub() {
     }
   }
 
-  override fun requestApplicationService(
+  override fun attachProcess(
       uid: Int,
       pid: Int,
       processName: String,
-      heartBeat: IBinder
-  ): ILSPApplicationService? {
+      heartBeat: IBinder,
+      nativeApiMode: IntArray
+  ): IFrameworkService? {
+    // Written on every return path (the AIDL out param marshals regardless of the return value);
+    // only a non-null service makes the caller read it, but leaving it undecided is the honest
+    // value for a process that will not be injected.
+    nativeApiMode[0] = NativeApiPolicy.MODE_UNDECIDED
     if (Binder.getCallingUid() != 1000) {
-      Log.w(TAG, "Unauthorized requestApplicationService call")
+      Log.w(TAG, "Unauthorized attachProcess call")
       return null
     }
-    if (ApplicationService.hasRegister(uid, pid)) return null
+    if (FrameworkService.hasRegister(uid, pid)) return null
 
     val scope = ProcessScope(processName, uid)
     if (!ManagerService.tryRegisterManagerProcess(pid, uid, processName) &&
@@ -72,8 +90,10 @@ object VectorService : IDaemonService.Stub() {
       return null
     }
 
-    return if (ApplicationService.registerHeartBeat(uid, pid, processName, heartBeat)) {
-      ApplicationService
+    return if (FrameworkService.registerHeartBeat(uid, pid, processName, heartBeat)) {
+      nativeApiMode[0] = NativeApiPolicy.modeFor(processName)
+      Log.d(TAG, "Native API mode for '$processName': ${nativeApiMode[0]}")
+      FrameworkService
     } else null
   }
 
@@ -147,9 +167,9 @@ object VectorService : IDaemonService.Stub() {
         IntentFilter(NotificationManager.moduleScopeAction).apply { addDataScheme("module") }
 
     val secretCodeFilter =
-        IntentFilter().apply {
+        IntentFilter(ACTION_SECRET_CODE).apply {
           addDataScheme("android_secret_code")
-          addDataAuthority("5776733", null)
+          addDataAuthority(SECRET_CODE, null)
         }
 
     // Define strict Android 14+ flags and the system-only BRICK permission
@@ -184,15 +204,15 @@ object VectorService : IDaemonService.Stub() {
     // UID Observer
     val uidObserver =
         object : android.app.IUidObserver.Stub() {
-          override fun onUidActive(uid: Int) = ModuleService.uidStarts(uid)
+          override fun onUidActive(uid: Int) = ModuleAppService.uidStarts(uid)
 
           override fun onUidCachedChanged(uid: Int, cached: Boolean) {
-            if (!cached) ModuleService.uidStarts(uid)
+            if (!cached) ModuleAppService.uidStarts(uid)
           }
 
-          override fun onUidIdle(uid: Int, disabled: Boolean) = ModuleService.uidStarts(uid)
+          override fun onUidIdle(uid: Int, disabled: Boolean) = ModuleAppService.uidStarts(uid)
 
-          override fun onUidGone(uid: Int, disabled: Boolean) = ModuleService.uidGone(uid)
+          override fun onUidGone(uid: Int, disabled: Boolean) = ModuleAppService.uidGone(uid)
         }
 
     val which =
@@ -262,6 +282,20 @@ object VectorService : IDaemonService.Stub() {
           // Otherwise, only wipe it for the user that just uninstalled it.
           val targetUser = if (isRemovedForAllUsers) null else userId
           PreferenceStore.deleteModulePrefs(moduleName, userId, group = null)
+          // The one preference of a module that is not stored under the module. "Never ask again"
+          // writes the package into a set belonging to "lspd", so the line above — which deletes
+          // what is filed under the module's own name — walks straight past it, and the package
+          // stayed blocked after it was uninstalled. Nothing else ever removes it: the CLI does not
+          // know the key and the manager offers no way back, so a module blocked by a mis-tap could
+          // never ask again on that device, and reinstalling it did not help.
+          //
+          // Asked of every package that goes for good, not only of modules, and deliberately so:
+          // `moduleName` here is whatever the broadcast named, and once a package is fully removed
+          // its metadata is gone, so this branch cannot tell a module from anything else —
+          // `isXposedModule` is decided below, and only for one that was still in our database. A
+          // package that was never blocked costs the one read of the "lspd" config row that
+          // [unblockScopeRequests] starts with, and nothing else.
+          if (isRemovedForAllUsers) unblockScopeRequests(moduleName)
           if (isRemovedForAllUsers && ModuleDatabase.removeModule(moduleName)) {
             // If it was in our DB and we successfully removed it, we treat it as an Xposed module.
             isXposedModule = true
@@ -275,10 +309,32 @@ object VectorService : IDaemonService.Stub() {
           isXposedModule =
               ModuleDatabase.updateModuleApkPath(
                   moduleName, ConfigCache.getModuleApkPath(appInfo), false)
-        } else if (ConfigCache.state.scopes.keys.any { it.uid == uid }) {
-          // If not a module, but it's an app that was previously a "scope" (target)
-          // for a module, we need to refresh the cache.
-          ConfigCache.requestCacheUpdate()
+        } else {
+          if (ConfigCache.state.scopes.keys.any { it.uid == uid }) {
+            // If not a module, but it's an app that was previously a "scope" (target)
+            // for a module, we need to refresh the cache.
+            ConfigCache.requestCacheUpdate()
+          }
+
+          if (action == Intent.ACTION_PACKAGE_ADDED &&
+              !intent.getBooleanExtra(Intent.EXTRA_REPLACING, false) &&
+              moduleName != null) {
+
+            ModuleDatabase.modulesIncludingNewApps().forEach { xposedModule ->
+              val scopeList = ModuleDatabase.getModuleScope(xposedModule) ?: mutableListOf()
+
+              val newScope =
+                  ScopeEntry().apply {
+                    this.packageName = moduleName
+                    this.userId = userId
+                  }
+
+              scopeList.add(newScope)
+              if (!ModuleDatabase.setModuleScope(xposedModule, scopeList)) {
+                Log.e(TAG, "Failed to auto-include $moduleName for $xposedModule")
+              }
+            }
+          }
         }
       }
       Intent.ACTION_UID_REMOVED -> {
@@ -317,9 +373,9 @@ object VectorService : IDaemonService.Stub() {
 
     // If an actual Xposed module was updated (not removed), show a system notification.
     if (moduleName != null && isXposedModule && !isRemovedAction && !isRemovedForAllUsers) {
-      val scopes = ConfigCache.getModuleScope(moduleName) ?: emptyList()
+      val scopes = ModuleDatabase.getModuleScope(moduleName) ?: emptyList()
       val isSystemModule = scopes.any { it.packageName == "system" }
-      val isEnabled = ManagerService.enabledModules().contains(moduleName)
+      val isEnabled = ManagerService.getEnabledModules().contains(moduleName)
 
       NotificationManager.notifyModuleUpdated(moduleName, userId, isEnabled, isSystemModule)
     }
@@ -330,7 +386,6 @@ object VectorService : IDaemonService.Stub() {
     val data = intent.data ?: return
     val extras = intent.extras ?: return
     val callbackBinder = extras.getBinder("callback") ?: return
-    if (!callbackBinder.isBinderAlive) return
 
     val authority = data.encodedAuthority ?: return
     val parts = authority.split(":", limit = 2)
@@ -341,21 +396,76 @@ object VectorService : IDaemonService.Stub() {
     val scopePackageName = data.path?.substring(1) ?: return // remove leading '/'
     val action = data.getQueryParameter("action") ?: return
 
+    // A prompt outlives the process that asked for it: it sits for an hour, and the app the module
+    // is running inside can be killed at any point in that hour. For approve, deny and the timeout
+    // there is then nobody left to tell, so those are dropped where they always were. "Never ask
+    // again" is not like them — it is the user's decision about the module, not an answer owed to a
+    // caller who is still listening — so it is honoured whether or not anyone is there to hear it,
+    // and the claim below still takes the prompt down.
+    if (!callbackBinder.isBinderAlive && action != "block") return
+
+    // One prompt reaches this receiver from four places — its three buttons and its delete intent
+    // — and a swipe or the one-hour timeout fires the delete intent whether or not a button was
+    // pressed first. Answering the module twice, an approval followed by a spurious "Request
+    // timeout", would be worse than the dismissal never reaching it, so whichever of the four
+    // arrives first is the one that answers and the rest are dropped. The request is identified by
+    // the module, its user and the package it asked for; the action is deliberately not part of
+    // that, since the whole point is that a second *different* action must not answer again.
+    if (!NotificationManager.claimScopeAnswer(packageName, userId, scopePackageName)) {
+      Log.d(TAG, "Ignoring $action of $scopePackageName for $packageName: already answered")
+      return
+    }
+
     val iCallback = IXposedScopeCallback.Stub.asInterface(callbackBinder)
     runCatching {
+          // Answered before the requested package is looked up at all, because "never ask again" is
+          // a decision about the *module* and not about the package this particular prompt happened
+          // to name. It used to sit in the when below, under the lookup, so a prompt naming a
+          // package that no longer resolves — uninstalled or disabled while the prompt was up,
+          // hidden by a profile owner, or never installed for this user — returned at "Package not
+          // found" and never reached blockScopeRequests: the user said stop asking, the prompt came
+          // down, and the module was free to ask again a second later.
+          if (action == "block") {
+            blockScopeRequests(packageName)
+            // The preference only stops the *next* request. A module that asked for three packages
+            // has a prompt up for each, so without this the user says "never ask again" and is left
+            // looking at two more questions, both still approvable. Each withdrawn request is
+            // answered in its own right, because each of them was asked in its own right; what that
+            // costs a module whose listener expects one call is written out on
+            // withdrawScopeRequests.
+            NotificationManager.withdrawScopeRequests(packageName).forEach { pending ->
+              runCatching { pending.onScopeRequestFailed("Request blocked by configuration") }
+            }
+            // Last, and caught, because this is the only call here that reaches into the module's
+            // process: it may be gone by now, and neither the preference write nor the withdrawal
+            // above must be lost to a dead binder. They can fail in their own ways — the write goes
+            // through a SQLite transaction — which is why the whole branch runs inside runCatching
+            // as well.
+            runCatching { iCallback.onScopeRequestFailed("Request blocked by configuration") }
+            return@runCatching
+          }
+
           val appInfo = packageManager?.getPackageInfoCompat(scopePackageName, 0, userId)
           if (appInfo == null) {
+            // Leaving the whole function here skipped the cancel below, which used to be merely
+            // untidy and is now a prompt nobody can use: the request has been answered, so every
+            // later press of its buttons is dropped. The request is over either way, so the
+            // notification goes with it.
             iCallback.onScopeRequestFailed("Package not found")
-            return
+            return@runCatching
           }
           when (action) {
             "approve" -> {
-              val scopes = ConfigCache.getModuleScope(packageName) ?: mutableListOf()
-              if (scopes.none { it.packageName == scopePackageName && it.userId == userId }) {
+              val scopes = ModuleDatabase.getModuleScope(packageName) ?: mutableListOf()
+              // Compared against where the row will land, not against the user who asked: the
+              // framework is stored under user 0 whoever requested it, so for "system" this test
+              // never matched and every approval appended a duplicate and rewrote the whole table.
+              val storedUserId = if (scopePackageName == "system") 0 else userId
+              if (scopes.none { it.packageName == scopePackageName && it.userId == storedUserId }) {
                 scopes.add(
-                    org.lsposed.lspd.models.Application().apply {
+                    ScopeEntry().apply {
                       this.packageName = scopePackageName
-                      this.userId = userId
+                      this.userId = storedUserId
                     })
                 ModuleDatabase.setModuleScope(packageName, scopes)
               }
@@ -363,19 +473,48 @@ object VectorService : IDaemonService.Stub() {
             }
             "deny" -> iCallback.onScopeRequestFailed("Request denied by user")
             "delete" -> iCallback.onScopeRequestFailed("Request timeout")
-            "block" -> {
-              val blocked =
-                  PreferenceStore.getModulePrefs("lspd", 0, "config")["scope_request_blocked"]
-                      as? Set<String> ?: emptySet()
-              PreferenceStore.updateModulePref(
-                  "lspd", 0, "config", "scope_request_blocked", blocked + packageName)
-              iCallback.onScopeRequestFailed("Request blocked by configuration")
-            }
           }
         }
-        .onFailure { runCatching { iCallback.onScopeRequestFailed(it.message) } }
+        // onScopeRequestFailed declares @NonNull, and Throwable.message is frequently null.
+        .onFailure { runCatching { iCallback.onScopeRequestFailed(it.message ?: it.toString()) } }
 
-    NotificationManager.cancelNotification(
-        NotificationManager.SCOPE_CHANNEL_ID, packageName, userId)
+    // Only this one request goes; a module that asked for several packages has a prompt still open
+    // for each of the others, and they are answered on their own.
+    NotificationManager.cancelScopeRequest(packageName, userId, scopePackageName)
+  }
+
+  /**
+   * The modules that may not ask for scope again.
+   *
+   * Filed under "lspd" rather than under the module it names, because it records the user's decision
+   * about a module rather than that module's own configuration. That is also why uninstalling a
+   * module does not take it away — `deleteModulePrefs` deletes what is filed under the module's own
+   * name — and why [unblockScopeRequests] has to exist.
+   */
+  @Suppress("UNCHECKED_CAST")
+  private fun blockedScopeRequests(): Set<String> =
+      PreferenceStore.getModulePrefs("lspd", 0, "config")["scope_request_blocked"] as? Set<String>
+          ?: emptySet()
+
+  private fun blockScopeRequests(packageName: String) {
+    PreferenceStore.updateModulePref(
+        "lspd", 0, "config", "scope_request_blocked", blockedScopeRequests() + packageName)
+  }
+
+  /**
+   * Lets an uninstalled module ask again if it comes back.
+   *
+   * "Never ask again" is a button in a notification, one tap from Approve, and nothing anywhere
+   * undid it: the socket CLI does not know the key, the manager offers no control for it, and the
+   * uninstall path missed it. A module blocked by a mis-tap was blocked on that device forever, and
+   * reinstalling it changed nothing. Uninstalling is a deliberate enough act to count as taking it
+   * back — and a module that is gone has no decision left to honour.
+   */
+  private fun unblockScopeRequests(packageName: String) {
+    val blocked = blockedScopeRequests()
+    if (packageName !in blocked) return
+    PreferenceStore.updateModulePref(
+        "lspd", 0, "config", "scope_request_blocked", blocked - packageName)
+    Log.i(TAG, "$packageName was uninstalled; it may ask for scope again if it returns")
   }
 }

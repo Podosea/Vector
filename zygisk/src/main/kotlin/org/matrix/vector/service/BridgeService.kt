@@ -7,8 +7,8 @@ import android.os.IBinder.DeathRecipient
 import android.os.Parcel
 import hidden.HiddenApiBridge.Binder_allowBlocking
 import hidden.HiddenApiBridge.Context_getActivityToken
-import org.lsposed.lspd.service.IDaemonService
-import org.lsposed.lspd.util.Utils.Log
+import org.matrix.vector.ipc.IVectorDaemon
+import org.matrix.vector.util.Log
 
 /**
  * Manages manual Binder transactions for the Vector framework.
@@ -30,7 +30,7 @@ object BridgeService {
 
     @Volatile private var serviceBinder: IBinder? = null
 
-    @Volatile private var service: IDaemonService? = null
+    @Volatile private var service: IVectorDaemon? = null
 
     /** Cleans up service references if the remote Vector daemon crashes. */
     private val serviceRecipient: DeathRecipient = DeathRecipient {
@@ -41,12 +41,12 @@ object BridgeService {
     }
 
     /** Returns the active Vector daemin service interface. */
-    @JvmStatic fun getService(): IDaemonService? = service
+    @JvmStatic fun getService(): IVectorDaemon? = service
 
     /**
      * Initializes the client-side connection to the Vector daemin service.
      *
-     * @param binder The raw binder for [IDaemonService].
+     * @param binder The raw binder for [IVectorDaemon].
      */
     private fun receiveFromBridge(binder: IBinder?) {
         if (binder == null) {
@@ -65,7 +65,7 @@ object BridgeService {
         // Allow blocking calls since we are often in a synchronous fork path
         val blockingBinder = Binder_allowBlocking(binder)
         serviceBinder = blockingBinder
-        service = IDaemonService.Stub.asInterface(blockingBinder)
+        service = IVectorDaemon.Stub.asInterface(blockingBinder)
 
         runCatching { blockingBinder.linkToDeath(serviceRecipient, 0) }
             .onFailure { Log.e(TAG, "Failed to link to service death", it) }
@@ -105,17 +105,24 @@ object BridgeService {
                 Action.GET_BINDER -> {
                     val processName = data.readString()
                     val heartBeat = data.readStrongBinder()
+                    // The daemon appends its per-process native API decision (NativeApiPolicy wire
+                    // values) as an out param; forward it to the specializing process in the same
+                    // reply. A peer older than the field reads nothing extra, and this side never
+                    // talks to a daemon older than itself (both ship in one zip).
+                    val nativeApiMode = IntArray(1)
                     val appService =
-                        service?.requestApplicationService(
+                        service?.attachProcess(
                             Binder.getCallingUid(),
                             Binder.getCallingPid(),
                             processName,
                             heartBeat,
+                            nativeApiMode,
                         )
 
                     if (appService != null && reply != null) {
                         reply.writeNoException()
                         reply.writeStrongBinder(appService.asBinder())
+                        reply.writeInt(nativeApiMode[0])
                         true
                     } else false
                 }

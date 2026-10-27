@@ -32,10 +32,14 @@ constexpr int SHARED_RELRO_UID = 1037;
 // Android uses this to separate users. UID = AppID + UserID * 10000.
 constexpr int PER_USER_RANGE = 100000;
 
-// Defined via CMake generated marcos
+// Defined via CMake generated macros. The package names arrive as bare preprocessor tokens
+// (`-DINJECTED_PACKAGE_NAME=com.android.shell`) because carrying quotes through gradle → cmake →
+// ninja → clang breaks on Windows (the MSVC argv parser eats the embedded quotes and the value
+// degrades to a multi-character constant). Same treatment as kVersionName in common/config.h:
+// VECTOR_STRINGIFY re-stringifies the expansion, which is platform-independent.
 constexpr uid_t kHostPackageUid = INJECTED_PACKAGE_UID;
-const char *const kHostPackageName = INJECTED_PACKAGE_NAME;
-const char *const kManagerPackageName = MANAGER_PACKAGE_NAME;
+const char *const kHostPackageName = VECTOR_STRINGIFY(INJECTED_PACKAGE_NAME);
+const char *const kManagerPackageName = VECTOR_STRINGIFY(MANAGER_PACKAGE_NAME);
 constexpr uid_t GID_INET = 3003;  // Android's Internet group ID.
 
 enum RuntimeFlags : uint32_t {
@@ -260,7 +264,21 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
             jint inet_gid = GID_INET;
             env_->SetIntArrayRegion(new_gids, original_gids_count, 1, &inet_gid);
 
-            args->nice_name = env_->NewStringUTF(INJECTED_PACKAGE_NAME);
+            // The new array is only seen by the native specialization, which calls setgroups().
+            // Once it returns, Zygote#forkAndSpecialize keeps using the array it passed in:
+            //
+            //   NetworkUtils.setAllowNetworkingForProcess(containsInetGid(gids));
+            //
+            // That flag lives in libnetd_client and gates the whole process: without it,
+            // socket() and dns_open_proxy() fail with EPERM no matter which groups we really
+            // belong to. So overwrite the first entry of the original array as well, to make
+            // containsInetGid() see the INET group. Dropping this slot is harmless: the array
+            // has no further use once specialization is done.
+            if (original_gids_count > 0) {
+                env_->SetIntArrayRegion(args->gids, 0, 1, &inet_gid);
+            }
+
+            args->nice_name = env_->NewStringUTF(VECTOR_STRINGIFY(INJECTED_PACKAGE_NAME));
             args->gids = new_gids;
         }
     }
@@ -288,7 +306,7 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
     if ((app_id >= FIRST_ISOLATED_UID && app_id <= LAST_ISOLATED_UID) ||
         (app_id >= FIRST_APP_ZYGOTE_ISOLATED_UID && app_id <= LAST_APP_ZYGOTE_ISOLATED_UID) ||
         app_id == SHARED_RELRO_UID) {
-        LOGV("Skipping injection for '{}': is an isolated process (UID: %d).", nice_name_str.get(),
+        LOGV("Skipping injection for '{}': is an isolated process (UID: {}).", nice_name_str.get(),
              app_id);
         return;
     }
@@ -310,15 +328,21 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
 
     // --- Framework Injection ---
     lsplant::JUTFString nice_name_str(env_, args->nice_name);
-    LOGD("Attempting injection into '{}'.", nice_name_str.get());
+    LOGD("Asking the daemon about '{}'.", nice_name_str.get());
 
     auto &ipc_bridge = IPCBridge::GetInstance();
-    auto binder = ipc_bridge.RequestAppBinder(env_, args->nice_name);
+    // The daemon's per-process native API decision rides on the GET_BINDER reply; stash it before
+    // the framework dex (and therefore any module) can run, so RegisterNativeLib sees it.
+    int nativeApiMode = 0;
+    auto binder = ipc_bridge.RequestAppBinder(env_, args->nice_name, &nativeApiMode);
     if (!binder) {
-        LOGD("No IPC binder obtained for '{}'. Skipping injection.", nice_name_str.get());
+        // Usually because nothing has it in scope, but the daemon may also not be up yet or have
+        // registered this process already. Only it knows which, and it logs the reason itself.
+        LOGD("Not injecting '{}': the daemon has no binder for it.", nice_name_str.get());
         SetAllowUnload(true);
         return;
     }
+    vector::native::SetDeliveredMode(nativeApiMode);
 
     // Fetch resources from the manager service.
     auto [dex_fd, dex_size] = ipc_bridge.FetchFrameworkDex(env_, binder.get());
@@ -345,12 +369,19 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
     this->SetupEntryClass(env_);
 
     // Hand off control to the Java side of the framework.
-    this->FindAndCall(
+    bool entered = this->FindAndCall(
         env_, "forkCommon", "(ZZLjava/lang/String;Ljava/lang/String;Landroid/os/IBinder;)V",
         JNI_FALSE, JNI_FALSE, args->nice_name, args->app_data_dir, binder.get(), is_manager_app_);
 
-    LOGV("Injected Vector framework into '{}'.", nice_name_str.get());
-    SetAllowUnload(false);  // We are injected, PREVENT module unloading.
+    if (entered) {
+        LOGV("Injected Vector framework into '{}'.", nice_name_str.get());
+    } else {
+        LOGE("Framework entry failed in '{}'; this process runs without Xposed.",
+             nice_name_str.get());
+    }
+    // Unconditionally: the ART and JNI hooks were installed before the entry ran, and their
+    // trampolines point into this library. Letting it be unloaded now would leave them dangling.
+    SetAllowUnload(false);
 }
 
 void VectorModule::preServerSpecialize(zygisk::ServerSpecializeArgs *args) {
@@ -432,13 +463,18 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
     this->SetupEntryClass(env_);
 
     auto system_name = lsplant::ScopedLocalRef(env_, env_->NewStringUTF("system"));
-    this->FindAndCall(env_, "forkCommon",
-                      "(ZZLjava/lang/String;Ljava/lang/String;Landroid/os/IBinder;)V", JNI_TRUE,
-                      is_late_inject, system_name.get(), nullptr, manager_binder.get(),
-                      is_manager_app_);
+    bool entered = this->FindAndCall(
+        env_, "forkCommon", "(ZZLjava/lang/String;Ljava/lang/String;Landroid/os/IBinder;)V",
+        JNI_TRUE, is_late_inject, system_name.get(), nullptr, manager_binder.get(),
+        is_manager_app_);
 
-    LOGI("Injected Vector framework into system_server.");
-    SetAllowUnload(false);  // We are injected, PREVENT module unloading.
+    if (entered) {
+        LOGI("Injected Vector framework into system_server.");
+    } else {
+        LOGE("Framework entry failed in system_server; it runs without Xposed.");
+    }
+    // See postAppSpecialize: the hooks outlive a failed entry, so the library must stay.
+    SetAllowUnload(false);
 }
 
 void VectorModule::SetAllowUnload(bool unload) {

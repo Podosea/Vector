@@ -1,5 +1,9 @@
 #include "logcat.h"
 
+#include <utils/jni_helper.hpp>
+
+#include "logging.h"
+
 #include <android/log.h>
 #include <jni.h>
 #include <sys/system_properties.h>
@@ -34,8 +38,8 @@ constexpr std::array<char, ANDROID_LOG_SILENT + 1> kLogChar = {
 
 // Module tags are sorted for O(log N) binary search.
 // These always route to the 'modules' (Xposed) log stream.
-constexpr auto kModuleTags =
-    std::array{"VectorContext"sv, "VectorLegacyBridge"sv, "XSharedPreferences"sv};
+constexpr auto kModuleTags = std::array{"VectorContext"sv, "VectorLegacyBridge"sv,
+                                        "VectorModuleManager"sv, "XSharedPreferences"sv};
 
 // These route to the 'verbose' stream only.
 constexpr auto kExactTags = std::array{"APatchD"sv, "Dobby"sv,  "KernelSU"sv, "LSPlant"sv,
@@ -241,8 +245,14 @@ void Logcat::Run() {
 
 extern "C" JNIEXPORT void JNICALL
 Java_org_matrix_vector_daemon_env_LogcatMonitor_runLogcat(JNIEnv* env, jobject thiz) {
-    jclass clazz = env->GetObjectClass(thiz);
-    jmethodID method = env->GetMethodID(clazz, "refreshFd", "(Z)I");
+    auto clazz = lsplant::JNI_GetObjectClass(env, thiz);
+    auto method = lsplant::JNI_GetMethodID(env, clazz, "refreshFd", "(Z)I");
+    if (!method) {
+        // The wrapper has already logged and cleared the NoSuchMethodError. Running with a null
+        // method id would abort inside the first refresh instead of saying why.
+        LOGE("LogcatMonitor.refreshFd is missing; not starting the log reader");
+        return;
+    }
     Logcat daemon(env, thiz, method);
     daemon.Run();
 }

@@ -3,6 +3,7 @@ package org.matrix.vector.daemon.data
 import android.content.res.AssetManager
 import android.content.res.Resources
 import android.os.Binder
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.RemoteException
@@ -27,16 +28,41 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Properties
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
-import org.lsposed.lspd.models.PreLoadedApk
+import org.matrix.vector.ipc.ModuleCode
 import org.matrix.vector.daemon.BuildConfig
 import org.matrix.vector.daemon.utils.ObfuscationManager
 
 private const val TAG = "VectorFileSystem"
+
+/**
+ * What came of trying to load a module APK.
+ *
+ * The loader used to answer every refusal with the same null, so a module built against libxposed
+ * API 100 — which this framework drops outright — reached the user as the same "the framework could
+ * not load it" as a zip that will not parse. That refusal is the one with somewhere to go: the
+ * module is not broken, it is old, and only a rebuild by its author moves it. The rest really are
+ * indistinguishable from here.
+ */
+sealed interface ModuleLoad {
+  /** Parsed, and ready to hand to a forking process. */
+  data class Loaded(val apk: ModuleCode) : ModuleLoad
+
+  /** Declares libxposed API 100, and carries nothing else this framework can load. */
+  data object UnsupportedApi : ModuleLoad
+
+  /** Will not parse, has no init files, or names no module classes. */
+  data object Unusable : ModuleLoad
+}
+
+/** The APK when it loaded and null when it did not, for callers with nothing to say about why. */
+val ModuleLoad.apkOrNull: ModuleCode?
+  get() = (this as? ModuleLoad.Loaded)?.apk
 
 object FileSystem {
   val basePath: Path = Paths.get("/data/adb/lspd")
@@ -160,33 +186,89 @@ object FileSystem {
     return memory
   }
 
-  /** Parses the module APK, extracts init lists, and loads DEXes into SharedMemory. */
-  fun loadModule(apkPath: String, obfuscate: Boolean): PreLoadedApk? {
-    val file = File(apkPath)
-    if (!file.exists()) return null
+  /**
+   * The packages a module claims, when its module.prop fixes the scope. Null when it does not, so
+   * a caller can tell "claims nothing" from "claims no restriction".
+   *
+   * staticScope is documented as "the module scope is fixed and users should not apply the module
+   * on apps outside the scope list". Enforcing that in the manager alone leaves the socket CLI, a
+   * backup restore and the module's own requestScope walking straight past it, so the daemon has
+   * to know about it too.
+   */
+  fun readStaticScope(apkPath: String): Set<String>? =
+      runCatching {
+            ZipFile(File(apkPath)).use { zip ->
+              val props =
+                  Properties().apply {
+                    zip.getEntry("META-INF/xposed/module.prop")?.let { entry ->
+                      runCatching { zip.getInputStream(entry).use { load(it) } }
+                    }
+                  }
+              if (!props.getProperty("staticScope").toBoolean()) return@use null
+              val claimed =
+                  zip.getEntry("META-INF/xposed/scope.list")?.let { entry ->
+                    zip.getInputStream(entry).bufferedReader().useLines { lines ->
+                      lines.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                    }
+                  } ?: emptySet()
+              // A module that fixes its scope and then names nothing has fixed it at "no apps at
+              // all": every write through here is refused, and pruneScopeToClaimed deletes the rows
+              // the user had already chosen on the next cache rebuild. That is a packaging mistake
+              // rather than an intention — a module ships staticScope=true with a scope.list it
+              // forgot to generate — and the cost of reading it literally is a module that can
+              // never hook anything, silently. So the declaration is ignored and the scope stays
+              // the user's; the manager's ModuleDetection ignores it too, so the picker it draws
+              // and the writes accepted here agree about what the module may hook.
+              if (claimed.isEmpty()) {
+                Log.w(TAG, "$apkPath fixes its scope but names nothing; ignoring staticScope")
+                return@use null
+              }
+              claimed
+            }
+          }
+          .onFailure { Log.w(TAG, "Cannot read the scope list of $apkPath", it) }
+          .getOrNull()
 
-    val preLoadedApk = PreLoadedApk()
+  /** Parses the module APK, extracts init lists, and loads DEXes into SharedMemory. */
+  fun loadModule(apkPath: String, obfuscate: Boolean): ModuleLoad {
+    val file = File(apkPath)
+    if (!file.exists()) return ModuleLoad.Unusable
+
+    val preLoadedApk = ModuleCode()
     val preLoadedDexes = mutableListOf<SharedMemory>()
     val moduleClassNames = mutableListOf<String>()
     val moduleLibraryNames = mutableListOf<String>()
     var isLegacy = false
+    var exceptionPassthrough = false
+    var targetApiVersion = 0
+    var autoHotReload = false
 
     runCatching {
           ZipFile(file).use { zip ->
-            // Parse module.prop to get targetApiVersion
+            // module.prop is specified as Java Properties format. Parsing it by hand mishandles
+            // ':' as a separator, '!' comments, escapes and line continuations, and the manager
+            // app already reads the same file with Properties.load.
             val props =
-                zip.getEntry("META-INF/xposed/module.prop")?.let { entry ->
-                  zip.getInputStream(entry).bufferedReader().useLines { lines ->
-                    lines
-                        .filter { it.contains("=") }
-                        .associate {
-                          val parts = it.split("=", limit = 2)
-                          parts[0].trim() to parts[1].trim()
-                        }
+                Properties().apply {
+                  zip.getEntry("META-INF/xposed/module.prop")?.let { entry ->
+                    // Properties.load rejects a malformed \uXXXX escape, which the old hand-rolled
+                    // parser tolerated. Keep that tolerance: a bad module.prop must not make the
+                    // APK unloadable, not least because a legacy module is selected by
+                    // assets/xposed_init and needs no module.prop at all.
+                    runCatching { zip.getInputStream(entry).use { load(it) } }
+                        .onFailure { Log.w(TAG, "Malformed module.prop in $apkPath", it) }
                   }
-                } ?: emptyMap()
+                }
 
-            val targetApi = props["targetApiVersion"]?.toIntOrNull() ?: 0
+            val targetApi = leadingInt(props.getProperty("targetApiVersion"))
+            targetApiVersion = targetApi
+            autoHotReload = props.getProperty("autoHotReload")?.trim().toBoolean()
+            // The module-wide mode ExceptionMode.DEFAULT resolves to. Anything that is not
+            // "passthrough" - absent, misspelled, or an explicit "protective" - keeps the
+            // protective default the API specifies.
+            exceptionPassthrough =
+                props.getProperty("exceptionMode")?.trim().equals("passthrough", true)
+
             val hasLegacyFile = zip.getEntry("assets/xposed_init") != null
 
             // Determine Loading Strategy based on Priority: API 101+ > Legacy > API 100
@@ -223,12 +305,12 @@ object FileSystem {
               }
               "UNSUPPORTED" -> {
                 Log.w(TAG, "Module $apkPath uses API 100 which is no longer supported.")
-                return null
+                return ModuleLoad.UnsupportedApi
               }
-              else -> return null // No valid init files found
+              else -> return ModuleLoad.Unusable // No valid init files found
             }
 
-            if (moduleClassNames.isEmpty()) return null
+            if (moduleClassNames.isEmpty()) return ModuleLoad.Unusable
 
             // Read DEX files
             var secondary = 1
@@ -242,10 +324,10 @@ object FileSystem {
         }
         .onFailure {
           Log.e(TAG, "Failed to load module $apkPath", it)
-          return null
+          return ModuleLoad.Unusable
         }
 
-    if (preLoadedDexes.isEmpty()) return null
+    if (preLoadedDexes.isEmpty()) return ModuleLoad.Unusable
 
     // Apply obfuscation
     if (obfuscate) {
@@ -263,9 +345,12 @@ object FileSystem {
       this.moduleClassNames = moduleClassNames
       this.moduleLibraryNames = moduleLibraryNames
       this.legacy = isLegacy
+      this.exceptionPassthrough = exceptionPassthrough
+      this.targetApiVersion = targetApiVersion
+      this.autoHotReload = autoHotReload
     }
 
-    return preLoadedApk
+    return ModuleLoad.Loaded(preLoadedApk)
   }
 
   /** Safely creates the log directory. If a file exists with the same name, it deletes it first. */
@@ -308,7 +393,7 @@ object FileSystem {
   fun getPreloadDex(obfuscate: Boolean): SharedMemory? {
     if (preloadDex == null) {
       runCatching {
-            FileInputStream("framework/lspd.dex").use { preloadDex = readDex(it, obfuscate) }
+            FileInputStream("framework/vector.dex").use { preloadDex = readDex(it, obfuscate) }
           }
           .onFailure { Log.e(TAG, "Failed to load framework dex", it) }
     }
@@ -336,6 +421,102 @@ object FileSystem {
     return path
   }
 
+  /**
+   * Copies a module's native libraries out of its APK into a directory this framework owns, and
+   * answers with that directory.
+   *
+   * A module loaded into system_server cannot dlopen a library straight out of its own APK.
+   * Everything under /data/app is apk_data_file, and while system_server may read and map such a
+   * file it may not execute it; AOSP says why in so many words - "Executable files in /data are a
+   * persistence vector" - and forbids granting it. Every app domain does hold that permission,
+   * which is the whole reason the same module loads the same library without trouble in an ordinary
+   * process and fails only in system_server.
+   *
+   * The way past it is not a new rule but the one this module already ships. xposed_data is a type
+   * we declare ourselves, outside the data_file_type attribute that neverallow is written against,
+   * and `allow * xposed_data {file dir} *` already reaches every domain - system_server included.
+   * A copy placed under it is one system_server may map executable. Extraction has a second
+   * benefit: the library ends up at offset zero of an ordinary file, so it no longer has to be
+   * stored uncompressed and page-aligned inside the APK to be mappable at all.
+   *
+   * Note that this deliberately does not consult moduleLibraryNames. That list only names the
+   * libraries whose native_init we are asked to call, and a module is free to load its own
+   * libraries without declaring any - the module that prompted all this does exactly that.
+   *
+   * Returns null when the module ships nothing for this ABI or the copy failed, in which case the
+   * module still loads and only its native part fails, exactly as it does today.
+   */
+  fun stageNativeLibraries(root: Path, packageName: String, apkPath: String): String? =
+      runCatching {
+            val apk = File(apkPath)
+            val dir = root.resolve("lib").resolve(packageName)
+
+            // Re-extract only when the APK behind the copy changed. Getting this wrong in the
+            // lenient direction would leave system_server running a module's superseded native
+            // code, so the framework's own version is part of the stamp as well.
+            val stamp = "${apk.length()}:${apk.lastModified()}:${BuildConfig.VERSION_CODE}"
+            val stampFile = dir.resolve(".stamp").toFile()
+            if (stampFile.isFile && stampFile.readText() == stamp) return@runCatching dir.toString()
+
+            val abis =
+                if (Process.is64Bit()) Build.SUPPORTED_64_BIT_ABIS else Build.SUPPORTED_32_BIT_ABIS
+
+            ZipFile(apk).use { zip ->
+              val libraries =
+                  zip.entries().asSequence().filter { !it.isDirectory && it.name.endsWith(".so") }
+                      .toList()
+              // A module built for several ABIs keeps them in sibling directories, and only the one
+              // this process could load is worth copying.
+              val abi =
+                  abis.firstOrNull { abi -> libraries.any { it.name.startsWith("lib/$abi/") } }
+                      ?: return@runCatching null
+
+              dir.toFile().deleteRecursively()
+              Files.createDirectories(dir)
+
+              libraries
+                  .filter { it.name.startsWith("lib/$abi/") }
+                  .forEach { entry ->
+                    val target = dir.resolve(entry.name.substringAfterLast('/'))
+                    zip.getInputStream(entry).use { input ->
+                      Files.newOutputStream(target).use { input.copyTo(it) }
+                    }
+                    Os.chmod(target.toString(), "644".toInt(8))
+                  }
+
+              stampFile.writeText(stamp)
+              // The daemon runs with a zero umask, so every mode here is set rather than inherited.
+              Os.chmod(stampFile.absolutePath, "644".toInt(8))
+              // The misc root is searchable but not listable; the staged tree keeps that shape, and
+              // the label is what actually decides whether system_server may map these files.
+              Os.chmod(dir.parent.toString(), "711".toInt(8))
+              Os.chmod(dir.toString(), "711".toInt(8))
+              setSelinuxContextRecursive(dir, "u:object_r:xposed_data:s0")
+              SELinux.setFileContext(dir.parent.toString(), "u:object_r:xposed_data:s0")
+              dir.toString()
+            }
+          }
+          .onFailure { Log.e(TAG, "Failed to stage the native libraries of $packageName", it) }
+          .getOrNull()
+
+  /**
+   * Drops staged libraries belonging to modules that are no longer bound for system_server, so an
+   * uninstalled or rescoped module does not leave a copy of its native code behind for good.
+   */
+  fun pruneStagedNativeLibraries(root: Path?, keep: Set<String>) {
+    if (root == null) return
+    runCatching {
+          val libRoot = root.resolve("lib")
+          if (!libRoot.isDirectory()) return
+          Files.list(libRoot).use { stream ->
+            stream
+                .filter { it.fileName.toString() !in keep }
+                .forEach { it.toFile().deleteRecursively() }
+          }
+        }
+        .onFailure { Log.e(TAG, "Failed to prune staged native libraries", it) }
+  }
+
   fun toGlobalNamespace(path: String): File {
     return if (path.startsWith("/")) File("/proc/1/root", path) else File("/proc/1/root/$path")
   }
@@ -343,8 +524,12 @@ object FileSystem {
   fun getLogs(zipFd: ParcelFileDescriptor) {
     runCatching {
           ZipOutputStream(java.io.FileOutputStream(zipFd.fileDescriptor)).use { os ->
+            // The commit, not just the version code: the code is the commit count on master, so
+            // every branch build at the same depth wears the number of an official build it was
+            // never made from. Without it an attached archive cannot be tied to a binary.
             val comment =
-                "Vector ${BuildConfig.BUILD_TYPE} ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+                "Vector ${BuildConfig.BUILD_TYPE} ${BuildConfig.VERSION_NAME} " +
+                    "(${BuildConfig.VERSION_CODE}) ${BuildConfig.VERSION_HASH}"
             os.setComment(comment)
             os.setLevel(java.util.zip.Deflater.BEST_COMPRESSION)
 
@@ -423,10 +608,10 @@ object FileSystem {
                     os.write("${scope.processName}/${scope.uid}\n".toByteArray())
                     modules.forEach { mod ->
                       os.write("\t${mod.packageName}\n".toByteArray())
-                      mod.file?.moduleClassNames?.forEach { cn ->
+                      mod.code?.moduleClassNames?.forEach { cn ->
                         os.write("\t\t$cn\n".toByteArray())
                       }
-                      mod.file?.moduleLibraryNames?.forEach { ln ->
+                      mod.code?.moduleLibraryNames?.forEach { ln ->
                         os.write("\t\t$ln\n".toByteArray())
                       }
                     }
@@ -448,6 +633,39 @@ object FileSystem {
     return "${prefix}_${formatter.format(Instant.now())}.log"
   }
 
+  /**
+   * The parts still on disk for one of the two logs, oldest first.
+   *
+   * Read from the directory rather than from LogcatMonitor's LRU so that a manager opened after a
+   * daemon restart still sees the history: the LRU is rebuilt empty, the files are not.
+   */
+  fun listLogParts(verbose: Boolean): List<String> {
+    val prefix = if (verbose) "verbose_" else "modules_"
+    return runCatching {
+          logDirPath
+              .toFile()
+              .listFiles { file -> file.isFile && file.name.startsWith(prefix) && file.name.endsWith(".log") }
+              ?.map { it.name }
+              // The names carry an ISO-8601 timestamp, so lexicographic order is chronological.
+              ?.sorted()
+              .orEmpty()
+        }
+        .getOrDefault(emptyList())
+  }
+
+  /**
+   * Opens one part by name.
+   *
+   * The name arrives from an unprivileged process and is used to build a path inside a directory
+   * only root can read, so it is never trusted: it has to be one of the names [listLogParts] just
+   * returned, which rules out traversal and anything outside the log directory by construction
+   * rather than by pattern-matching for "..".
+   */
+  fun openLogPart(verbose: Boolean, name: String): File? {
+    if (name !in listLogParts(verbose)) return null
+    return logDirPath.resolve(name).toFile().takeIf { it.isFile }
+  }
+
   fun getNewVerboseLogPath(): File {
     createLogDirPath()
     return logDirPath.resolve(getNewLogFileName("verbose")).toFile()
@@ -457,4 +675,8 @@ object FileSystem {
     createLogDirPath()
     return logDirPath.resolve(getNewLogFileName("modules")).toFile()
   }
+
+  // Matches the manager's leading-integer parsing, including values such as "101.0".
+  private fun leadingInt(value: String?): Int =
+      value?.trim()?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 0
 }

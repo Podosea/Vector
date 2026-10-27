@@ -13,6 +13,7 @@ import android.content.pm.VersionedPackage
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.SELinux
@@ -23,10 +24,14 @@ import hidden.HiddenApiBridge
 import io.github.libxposed.service.IXposedService
 import java.io.File
 import java.util.concurrent.CountDownLatch
-import org.lsposed.lspd.ILSPManagerService
-import org.lsposed.lspd.models.Application
-import org.lsposed.lspd.models.UserInfo
+import java.util.concurrent.TimeUnit
+import org.matrix.vector.ipc.DeviceUser
+import org.matrix.vector.ipc.IFrameworkInstallReceiver
+import org.matrix.vector.ipc.IManagerService
+import org.matrix.vector.ipc.ModuleLoadFailure
+import org.matrix.vector.ipc.ScopeEntry
 import org.matrix.vector.daemon.BuildConfig
+import org.matrix.vector.daemon.VectorDaemon
 import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.FileSystem
 import org.matrix.vector.daemon.data.ModuleDatabase
@@ -34,13 +39,28 @@ import org.matrix.vector.daemon.data.PreferenceStore
 import org.matrix.vector.daemon.env.Dex2OatServer
 import org.matrix.vector.daemon.env.LogcatMonitor
 import org.matrix.vector.daemon.system.*
+import org.matrix.vector.daemon.utils.InstallerVerifier
+import org.matrix.vector.daemon.utils.PackageOptimizer
+import org.matrix.vector.daemon.utils.RootImplementation
 import org.matrix.vector.daemon.utils.applyXspaceWorkaround
 import org.matrix.vector.daemon.utils.getRealUsers
 import rikka.parcelablelist.ParcelableListSlice
 
 private const val TAG = "VectorManagerService"
 
-object ManagerService : ILSPManagerService.Stub() {
+object ManagerService : IManagerService.Stub() {
+
+  /** AOSP's switch for the synthesised launcher entries Android 10 introduced. */
+  private const val SHOW_HIDDEN_ICON_APPS = "show_hidden_icon_apps_enabled"
+
+  /**
+   * How long [uninstallPackage] waits for the package installer to report back.
+   *
+   * Generous rather than tight: the work is real and a loaded device can take a while over it. What
+   * it exists to bound is the case where the status never comes at all.
+   */
+  private const val UNINSTALL_TIMEOUT_SECONDS = 60L
+
 
   private var managerPid = -1
   private var pendingManager = false
@@ -52,9 +72,18 @@ object ManagerService : ILSPManagerService.Stub() {
 
   class ManagerGuard(private val binder: IBinder, val pid: Int, val uid: Int) :
       IBinder.DeathRecipient {
+    // system_server dispatches the 3-argument callback up to Android 16 and the
+    // 4-argument one from Android 17 on.
     private val connection =
         object : android.app.IServiceConnection.Stub() {
           override fun connected(name: ComponentName?, service: IBinder?, dead: Boolean) {}
+
+          override fun connected(
+              name: ComponentName?,
+              service: IBinder?,
+              session: android.app.IBinderSession?,
+              dead: Boolean
+          ) {}
         }
 
     init {
@@ -137,7 +166,7 @@ object ManagerService : ILSPManagerService.Stub() {
           }
 
           intent.categories?.clear()
-          intent.addCategory("org.lsposed.manager.LAUNCH_MANAGER")
+          intent.addCategory("${BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME}.LAUNCH_MANAGER")
           intent.setPackage(BuildConfig.MANAGER_INJECTED_PKG_NAME)
           managerIntent = Intent(intent)
         }
@@ -148,22 +177,9 @@ object ManagerService : ILSPManagerService.Stub() {
   fun openManager(withData: Uri?) {
     val intent = getManagerIntent() ?: return
     val launchIntent = Intent(intent).apply { data = withData }
-    runCatching {
-          activityManager?.startActivityAsUserWithFeature(
-              SystemContext.appThread,
-              "android",
-              null,
-              launchIntent,
-              launchIntent.type,
-              null,
-              null,
-              0,
-              0,
-              null,
-              null,
-              0)
-        }
-        .onFailure { Log.e(TAG, "Failed to open manager", it) }
+    // Negative results are `ActivityManager.START_*` errors, the positive ones are all successes.
+    val result = activityManager?.startActivityAsUserCompat(launchIntent, 0) ?: -1
+    if (result < 0) Log.e(TAG, "Failed to open manager: $result")
   }
 
   /** Fixes permissions for the WebView cache. */
@@ -211,11 +227,15 @@ object ManagerService : ILSPManagerService.Stub() {
   fun isRunningManager(pid: Int, uid: Int): Boolean =
       pid == managerPid && ConfigCache.isManager(uid)
 
-  override fun getXposedApiVersion() = IXposedService.LIB_API
+  override fun getProtocolVersion() = IManagerService.PROTOCOL_VERSION
 
-  override fun getXposedVersionCode() = BuildConfig.VERSION_CODE
+  override fun getLibxposedApiVersion() = IXposedService.LIB_API
 
-  override fun getXposedVersionName() = BuildConfig.VERSION_NAME
+  override fun getFrameworkVersionCode() = BuildConfig.VERSION_CODE
+
+  override fun getFrameworkVersionName() = BuildConfig.VERSION_NAME
+
+  override fun getBuildStamp(): String? = BuildConfig.VERSION_HASH.takeIf { it.isNotBlank() }
 
   override fun getInstalledPackagesFromAllUsers(
       flags: Int,
@@ -225,47 +245,92 @@ object ManagerService : ILSPManagerService.Stub() {
         packageManager?.getInstalledPackagesFromAllUsers(flags, filterNoProcess) ?: emptyList())
   }
 
-  override fun enabledModules() = ConfigCache.state.modules.keys.toTypedArray()
+  override fun getEnabledModules() = ModuleDatabase.enabledModules().toList()
 
-  override fun enableModule(packageName: String) = ModuleDatabase.enableModule(packageName)
+  /**
+   * The unloadable map, as a list of rows.
+   *
+   * The map is exactly what the pair this replaced sent one key and one lookup at a time, so the
+   * conversion is the whole of the merge. A reason of 0 is never stored — [ConfigCache] only ever
+   * writes one of the three failures — so the AIDL's promise that 0 never travels holds without a
+   * filter here.
+   */
+  override fun getModuleLoadFailures(): List<ModuleLoadFailure> =
+      ConfigCache.state.unloadable.map { (pkgName, why) ->
+        ModuleLoadFailure().apply {
+          packageName = pkgName
+          reason = why
+        }
+      }
 
-  override fun disableModule(packageName: String) = ModuleDatabase.disableModule(packageName)
+  override fun setModuleEnabled(packageName: String, enabled: Boolean) =
+      if (enabled) ModuleDatabase.enableModule(packageName)
+      else ModuleDatabase.disableModule(packageName)
 
-  override fun setModuleScope(packageName: String, scope: MutableList<Application>) =
+  override fun setModuleScope(packageName: String, scope: MutableList<ScopeEntry>) =
       ModuleDatabase.setModuleScope(packageName, scope)
 
-  override fun getModuleScope(packageName: String) = ConfigCache.getModuleScope(packageName)
+  override fun getModuleScope(packageName: String) = ModuleDatabase.getModuleScope(packageName)
 
-  override fun isVerboseLog() = PreferenceStore.isVerboseLogEnabled() || BuildConfig.DEBUG
+  // Reports the setting, not the setting OR'd with the build type. It used to be
+  // `|| BuildConfig.DEBUG`, which made the value unwritable on a debug daemon: the manager could
+  // never read false, so its switch snapped back on every tap and had to be greyed out. The OR was
+  // redundant anyway — `isVerboseLogEnabled()` already defaults to true — so a debug build still
+  // logs verbosely out of the box, and now a developer can also turn it off.
+  override fun isVerboseLogEnabled() = PreferenceStore.isVerboseLogEnabled()
 
-  override fun setVerboseLog(enabled: Boolean) {
-    if (isVerboseLog()) LogcatMonitor.startVerbose() else LogcatMonitor.stopVerbose()
+  override fun setVerboseLogEnabled(enabled: Boolean) {
     PreferenceStore.setVerboseLog(enabled)
+    if (isVerboseLogEnabled()) LogcatMonitor.startVerbose() else LogcatMonitor.stopVerbose()
   }
 
-  override fun getVerboseLog() =
-      LogcatMonitor.getVerboseLog()?.let {
+  override fun getLogParts(verbose: Boolean): List<String> = FileSystem.listLogParts(verbose)
+
+  override fun getLogPart(verbose: Boolean, name: String): ParcelFileDescriptor? =
+      FileSystem.openLogPart(verbose, name)?.let {
         ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY)
       }
 
-  override fun getModulesLog(): ParcelFileDescriptor? {
-    LogcatMonitor.checkLogFile()
-    return LogcatMonitor.getModulesLog()?.let {
-      ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY)
-    }
+  /**
+   * The part being written on one of the two streams.
+   *
+   * The two calls this replaces were not symmetric: only the modules one asked
+   * [LogcatMonitor.checkLogFile] to re-open a descriptor the reader had lost. That asymmetry is
+   * kept exactly as it was rather than tidied away, because levelling it either way changes when a
+   * lost descriptor is repaired, and that is a decision about the log rather than about this
+   * merge.
+   */
+  override fun getLiveLogPart(verbose: Boolean): ParcelFileDescriptor? {
+    if (!verbose) LogcatMonitor.checkLogFile()
+    val file = if (verbose) LogcatMonitor.getVerboseLog() else LogcatMonitor.getModulesLog()
+    return file?.let { ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY) }
   }
 
-  override fun clearLogs(verbose: Boolean): Boolean {
+  override fun startNewLogPart(verbose: Boolean) {
     LogcatMonitor.refresh(verbose)
-    return true
   }
-
-  override fun getPackageInfo(packageName: String, flags: Int, uid: Int) =
-      packageManager?.getPackageInfoCompat(packageName, flags, uid)
 
   override fun forceStopPackage(packageName: String, userId: Int) {
     activityManager?.forceStopPackage(packageName, userId)
   }
+
+  override fun softReboot() = VectorDaemon.softReboot()
+
+  /**
+   * The flashed manager APK, verified, for the manager to install as an ordinary app.
+   *
+   * The same file and the same check as [FrameworkService.openManagerApk], which
+   * serves it to the host process for injection — one APK, one signature gate, whichever way it
+   * leaves the module directory.
+   */
+  override fun getManagerApk(): ParcelFileDescriptor? =
+      runCatching {
+            InstallerVerifier.verifyInstallerSignature(FileSystem.managerApkPath.toString())
+            ParcelFileDescriptor.open(
+                FileSystem.managerApkPath.toFile(), ParcelFileDescriptor.MODE_READ_ONLY)
+          }
+          .onFailure { Log.e(TAG, "Failed to open or verify manager APK", it) }
+          .getOrNull()
 
   override fun reboot() {
     powerManager?.reboot(false, null, false)
@@ -316,18 +381,31 @@ object ManagerService : ILSPManagerService.Stub() {
             .getOrNull() ?: return false
 
     val pkg = VersionedPackage(packageName, PackageManager.VERSION_CODE_HIGHEST)
-    val flag = if (userId == -1) 0x00000002 else 0 // DELETE_ALL_USERS flag
+    val allUsers = userId == IManagerService.ALL_USERS
+    val flag = if (allUsers) 0x00000002 else 0 // DELETE_ALL_USERS flag
 
     runCatching {
           packageManager
               ?.packageInstaller
-              ?.uninstall(pkg, "android", flag, intentSender, if (userId == -1) 0 else userId)
+              ?.uninstall(pkg, "android", flag, intentSender, if (allUsers) 0 else userId)
         }
         .onFailure {
           return false
         }
 
-    latch.await()
+    // Bounded, because this runs on a binder thread and the status is a broadcast the package
+    // installer may never send — a device-policy refusal, a user removed mid-uninstall, a wedged
+    // system service. An unbounded wait held that thread for the life of the daemon, and enough of
+    // them exhaust the pool, at which point every call from the manager and from every injected
+    // process queues behind an uninstall nobody is still watching.
+    //
+    // A timeout is not a failure of the uninstall, only of our knowledge of it, so it answers false
+    // for the same reason a refusal does: the caller must not be told a package is gone on the
+    // strength of a status that never arrived.
+    if (!latch.await(UNINSTALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      Log.w(TAG, "No uninstall status for $packageName after ${UNINSTALL_TIMEOUT_SECONDS}s")
+      return false
+    }
     return result
   }
 
@@ -335,27 +413,19 @@ object ManagerService : ILSPManagerService.Stub() {
       SELinux.checkSELinuxAccess(
           "u:r:dex2oat:s0", "u:object_r:dex2oat_exec:s0", "file", "execute_no_trans")
 
-  override fun getUsers(): List<UserInfo> {
+  override fun getUsers(): List<DeviceUser> {
     return userManager?.getRealUsers()?.map {
-      UserInfo().apply {
+      DeviceUser().apply {
         id = it.id
         name = it.name
       }
     } ?: emptyList()
   }
 
-  override fun installExistingPackageAsUser(packageName: String, userId: Int): Int {
-    return runCatching {
-          packageManager?.installExistingPackageAsUser(packageName, userId, 0, 0, null) ?: -110
-        }
-        .getOrDefault(-110)
-  }
+  override fun isSystemServerAttached() = SystemServerService.systemServerRequested
 
-  override fun systemServerRequested() = SystemServerService.systemServerRequested
-
-  override fun startActivityAsUserWithFeature(intent: Intent, userId: Int): Int {
-    if (!intent.getBooleanExtra("lsp_no_switch_to_user", false)) {
-      intent.removeExtra("lsp_no_switch_to_user")
+  override fun startActivityAsUser(intent: Intent, userId: Int, noUserSwitch: Boolean): Int {
+    if (!noUserSwitch) {
       val currentUser = activityManager?.currentUser
       val parent = userManager?.getProfileParent(userId)?.id ?: userId
       if (currentUser != null && currentUser.id != parent) {
@@ -366,19 +436,7 @@ object ManagerService : ILSPManagerService.Stub() {
         wm?.lockNow(null)
       }
     }
-    return activityManager?.startActivityAsUserWithFeature(
-        SystemContext.appThread,
-        "android",
-        null,
-        intent,
-        intent.type,
-        null,
-        null,
-        0,
-        0,
-        null,
-        null,
-        userId) ?: -1
+    return activityManager?.startActivityAsUserCompat(intent, userId) ?: -1
   }
 
   override fun queryIntentActivitiesAsUser(
@@ -391,39 +449,65 @@ object ManagerService : ILSPManagerService.Stub() {
             ?: emptyList())
   }
 
-  override fun dex2oatFlagsLoaded() =
+  override fun isDex2OatInliningDisabled() =
       SystemProperties.get("dalvik.vm.dex2oat-flags").contains("--inline-max-code-units=0")
 
-  override fun setHiddenIcon(hide: Boolean) {
-    val args =
-        Bundle().apply {
-          putString("value", if (hide) "0" else "1")
-          putString("_user", "0")
-        }
-    runCatching {
-          val provider =
-              activityManager
-                  ?.getContentProviderExternal("settings", 0, SystemContext.token, null)
-                  ?.provider
-          provider?.call("android", "settings", "PUT_global", "show_hidden_icon_apps_enabled", args)
-        }
-        .onFailure { Log.w(TAG, "setHiddenIcon failed", it) }
+  /**
+   * Android 10 and later synthesise a launcher entry for an installed app that declares none, and
+   * `show_hidden_icon_apps_enabled` is the switch for that: 1 shows them, 0 leaves them hidden.
+   *
+   * Read and written by running `settings`, which is neither laziness nor a shortcut. Two in-process
+   * routes were tried on a Pixel 6 running Android 17 and both are closed to this process:
+   *
+   *  * The original code called `IContentProvider.call` with the pre-Android-12 signature, the one
+   *    without an `AttributionSource`. That method has not existed since Android 12, so every press
+   *    threw `NoSuchMethodError` — logged at warning level, swallowed, and the switch moved anyway.
+   *  * Going through `ActivityThread.getSystemContext().getContentResolver()` then fails at the
+   *    other end: `SecurityException: Unable to find app for caller … when getting content provider
+   *    settings`. The daemon has an ActivityThread but no application record, so the system will
+   *    not hand it a provider.
+   *
+   * The command is stable across versions in a way that the hidden binder interface demonstrably is
+   * not, and the daemon is root, so it is entitled to run it. This codebase already shells out for
+   * module installs and for dex2oat.
+   */
+  override fun setForcedLauncherIcons(force: Boolean) {
+    runCatching { settingsCommand("put", if (force) "1" else "0") }
+        .onFailure { Log.w(TAG, "setForcedLauncherIcons failed", it) }
   }
 
-  override fun getLogs(zipFd: ParcelFileDescriptor) {
+  override fun isForcedLauncherIcons(): Boolean =
+      runCatching {
+            // Unset must read as the platform default of 1, not as "off" — otherwise the switch
+            // shows the opposite of what the system is doing on every device where nobody has
+            // touched it.
+            settingsCommand("get")?.trim().let { it.isNullOrEmpty() || it == "null" || it == "1" }
+          }
+          .getOrDefault(true)
+
+  private fun settingsCommand(verb: String, value: String? = null): String? {
+    val command = buildList {
+      add("settings")
+      add(verb)
+      add("global")
+      add(SHOW_HIDDEN_ICON_APPS)
+      value?.let { add(it) }
+    }
+    val process = ProcessBuilder(command).redirectErrorStream(true).start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }
+    process.waitFor()
+    return output.ifBlank { null }
+  }
+
+  override fun writeBugReport(zipFd: ParcelFileDescriptor) {
     FileSystem.getLogs(zipFd)
   }
 
-  override fun restartFor(intent: Intent) {} // No-op matching original
 
-  override fun clearApplicationProfileData(packageName: String) {
-    packageManager?.clearApplicationProfileData(packageName)
-  }
+  override fun isStatusNotificationEnabled() = PreferenceStore.isStatusNotificationEnabled()
 
-  override fun enableStatusNotification() = PreferenceStore.isStatusNotificationEnabled()
-
-  override fun setEnableStatusNotification(enable: Boolean) {
-    val isEnabled = enableStatusNotification()
+  override fun setStatusNotificationEnabled(enable: Boolean) {
+    val isEnabled = isStatusNotificationEnabled()
     PreferenceStore.setStatusNotification(enable)
     if (isEnabled && !enable) {
       NotificationManager.cancelStatusNotification()
@@ -433,14 +517,40 @@ object ManagerService : ILSPManagerService.Stub() {
     }
   }
 
-  override fun performDexOptMode(packageName: String) =
-      org.matrix.vector.daemon.utils.performDexOptMode(packageName)
+  override fun optimizePackage(packageName: String) = PackageOptimizer.optimize(packageName)
 
-  override fun getDex2OatWrapperCompatibility() =
+  override fun getDex2OatWrapperState() =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) Dex2OatServer.compatibility else 0
 
-  override fun setAutoInclude(packageName: String, enabled: Boolean) =
-      ModuleDatabase.setAutoInclude(packageName, enabled)
+  override fun setIncludeNewApps(packageName: String, enabled: Boolean) =
+      ModuleDatabase.setIncludeNewApps(packageName, enabled)
 
-  override fun getAutoInclude(packageName: String) = ConfigCache.getAutoInclude(packageName)
+  override fun getIncludeNewApps(packageName: String) = ModuleDatabase.getIncludeNewApps(packageName)
+
+  override fun getRootImplementation() = RootImplementation.implementation
+
+
+  override fun installFrameworkZip(zipPath: String, receiver: IFrameworkInstallReceiver) {
+    // Off the binder thread: a flash takes seconds to minutes, and holding a binder thread for its
+    // duration starves everything else the manager asks of the daemon meanwhile — including the
+    // log reads the install screen is doing to show what is happening.
+    Thread {
+          val exit =
+              RootImplementation.install(zipPath) { line ->
+                runCatching { receiver.onLine(line) }
+                    .onFailure {
+                      // The manager went away mid-flash. Keep installing — stopping now would
+                      // leave the module tree half-written — and keep logging, which is the only
+                      // record left.
+                      Log.w(TAG, "Install receiver is gone; continuing", it)
+                    }
+              }
+          runCatching { receiver.onFinished(exit) }
+              .onFailure { Log.w(TAG, "Could not report install result", it) }
+        }
+        .apply {
+          name = "vector-framework-install"
+          start()
+        }
+  }
 }

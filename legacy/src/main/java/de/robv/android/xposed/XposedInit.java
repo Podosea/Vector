@@ -24,8 +24,8 @@ import org.matrix.vector.impl.core.VectorServiceClient;
 import org.matrix.vector.impl.utils.VectorModuleClassLoader;
 import org.matrix.vector.nativebridge.NativeAPI;
 import org.matrix.vector.nativebridge.ResourcesHook;
-import org.lsposed.lspd.models.PreLoadedApk;
-import org.lsposed.lspd.util.Utils.Log;
+import org.matrix.vector.ipc.ModuleCode;
+import org.matrix.vector.util.Log;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
@@ -204,11 +204,11 @@ public final class XposedInit {
     }
 
     public static void loadLegacyModules() {
-        var moduleList = VectorServiceClient.INSTANCE.getLegacyModulesList();
+        var moduleList = VectorServiceClient.INSTANCE.getLegacyModules();
         moduleList.forEach(module -> {
             var apk = module.apkPath;
             var name = module.packageName;
-            var file = module.file;
+            var file = module.code;
             loadedModules.put(name, Optional.of(apk)); // temporarily add it for XSharedPreference
             if (!loadModule(name, apk, file)) {
                 loadedModules.remove(name);
@@ -216,9 +216,16 @@ public final class XposedInit {
         });
     }
 
+    private static final AtomicBoolean modulesLoaded = new AtomicBoolean(false);
+
     public static void loadModules(ActivityThread at) {
+        // A late-injected system server calls this directly because its ActivityThread.attach
+        // already ran; guard so the normal path cannot load a second generation on top.
+        if (!modulesLoaded.compareAndSet(false, true)) {
+            return;
+        }
         var packages = (ArrayMap<?, ?>) XposedHelpers.getObjectField(at, "mPackages");
-        VectorServiceClient.INSTANCE.getModulesList().forEach(module -> {
+        VectorServiceClient.INSTANCE.getModules().forEach(module -> {
             loadedModules.put(module.packageName, Optional.empty());
             if (!VectorModuleManager.INSTANCE.loadModule(module, startsSystemServer, VectorServiceClient.INSTANCE.getProcessName())) {
                 loadedModules.remove(module.packageName);
@@ -280,10 +287,17 @@ public final class XposedInit {
      * Load a module from an APK by calling the init(String) method for all classes defined
      * in <code>assets/xposed_init</code>.
      */
-    private static boolean loadModule(String name, String apk, PreLoadedApk file) {
+    private static boolean loadModule(String name, String apk, ModuleCode file) {
         Log.v(TAG, "Loading legacy module " + name + " from " + apk);
 
         var sb = new StringBuilder();
+        // In system_server the in-APK entries below can only ever be refused: /data/app is
+        // apk_data_file, which that domain may read and map but never execute. The daemon stages a
+        // copy under a label we own for exactly this reason, and it has to come first, because
+        // findLibrary answers with the first candidate it can open.
+        if (startsSystemServer && file.nativeLibraryDir != null) {
+            sb.append(file.nativeLibraryDir).append(File.pathSeparator);
+        }
         var abis = Process.is64Bit() ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
         for (String abi : abis) {
             sb.append(apk).append("!/lib/").append(abi).append(File.pathSeparator);

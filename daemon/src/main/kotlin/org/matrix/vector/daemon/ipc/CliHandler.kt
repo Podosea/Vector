@@ -3,14 +3,14 @@ package org.matrix.vector.daemon.ipc
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
-import org.lsposed.lspd.models.Application
+import io.github.libxposed.service.IXposedService
+import org.matrix.vector.ipc.ScopeEntry
 import org.matrix.vector.daemon.BuildConfig
 import org.matrix.vector.daemon.CliRequest
 import org.matrix.vector.daemon.CliResponse
 import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.ModuleDatabase
 import org.matrix.vector.daemon.data.PreferenceStore
-import org.matrix.vector.daemon.system.*
 
 object CliHandler {
 
@@ -40,13 +40,9 @@ object CliHandler {
     return mapOf(
         "Framework Version" to BuildConfig.VERSION_NAME,
         "Version Code" to BuildConfig.VERSION_CODE,
-        "Enabled Modules" to ConfigCache.state.modules.size,
+        "API Version" to IXposedService.LIB_API,
+        "Enabled Modules" to ModuleDatabase.enabledModules().size,
         "Status Notification" to PreferenceStore.isStatusNotificationEnabled())
-  }
-
-  private fun isPackageInstalled(pkg: String, userId: Int = 0): Boolean {
-    return runCatching { packageManager?.getPackageInfo(pkg, 0, userId) != null }
-        .getOrDefault(false)
   }
 
   private fun handleModules(request: CliRequest): Any {
@@ -55,8 +51,10 @@ object CliHandler {
         val enabledOnly = request.options["enabled"] as? Boolean ?: false
         val disabledOnly = request.options["disabled"] as? Boolean ?: false
 
-        //  Get the current immutable snapshot of enabled modules
-        val enabledModuleKeys = ConfigCache.state.modules.keys
+        // Asked of the configuration, not of the cache. The cache holds what could be *loaded* and
+        // is rebuilt asynchronously, so the CLI used to report a module the user had just enabled
+        // as disabled, and disagree with both the manager and `ManagerService.getEnabledModules()`.
+        val enabledModuleKeys = ModuleDatabase.enabledModules().toSet()
         //  Get all installed modules from the system
         val installed = ConfigCache.getInstalledModules()
 
@@ -106,16 +104,29 @@ object CliHandler {
     val modulePkg = request.targets[0]
     val apps = request.targets.drop(1)
 
+    // staticScope fixes the scope, so the CLI may still read it and take apps out of it, but not
+    // put new ones in. Checked here as well as in the database so the answer names the packages.
+    fun rejectBeyondStaticScope(apps: List<String>) {
+      val claimed = ConfigCache.staticScopeOf(modulePkg) ?: return
+      val beyond = apps.map { it.substringBefore('/') }.filterNot { claimed.contains(it) }
+      if (beyond.isNotEmpty()) {
+        throw IllegalArgumentException(
+            "$modulePkg fixes its scope in module.prop, so ${beyond.joinToString()} cannot be " +
+                "added. It claims: ${claimed.sorted().joinToString().ifEmpty { "nothing" }}.")
+      }
+    }
+
     return when (request.action) {
       "ls" -> {
         val scope =
-            ConfigCache.getModuleScope(modulePkg)
+            ModuleDatabase.getModuleScope(modulePkg)
                 ?: throw IllegalArgumentException("Module not found: $modulePkg")
         scope.map { mapOf("APP_PACKAGE" to it.packageName, "USER_ID" to it.userId) }
       }
       "add" -> {
         if (apps.isEmpty()) throw IllegalArgumentException("No target apps provided.")
-        val scope = ConfigCache.getModuleScope(modulePkg) ?: mutableListOf()
+        rejectBeyondStaticScope(apps)
+        val scope = ModuleDatabase.getModuleScope(modulePkg) ?: mutableListOf()
 
         apps.forEach { appStr ->
           val parts = appStr.split("/")
@@ -123,7 +134,7 @@ object CliHandler {
           val user = parts.getOrNull(1)?.toIntOrNull() ?: 0
           if (scope.none { it.packageName == pkg && it.userId == user }) {
             scope.add(
-                Application().apply {
+                ScopeEntry().apply {
                   packageName = pkg
                   userId = user
                 })
@@ -135,13 +146,14 @@ object CliHandler {
       "set" -> {
         if (apps.isEmpty())
             throw IllegalArgumentException("No target apps provided for scope overwrite.")
-        val scope = mutableListOf<Application>()
+        rejectBeyondStaticScope(apps)
+        val scope = mutableListOf<ScopeEntry>()
         apps.forEach { appStr ->
           val parts = appStr.split("/")
           val pkg = parts[0]
           val user = parts.getOrNull(1)?.toIntOrNull() ?: 0
           scope.add(
-              Application().apply {
+              ScopeEntry().apply {
                 packageName = pkg
                 userId = user
               })
@@ -172,8 +184,8 @@ object CliHandler {
         val key = keys[0]
         val value =
             when (key) {
-              "status-notification" -> ManagerService.enableStatusNotification()
-              "verbose-log" -> ManagerService.isVerboseLog
+              "status-notification" -> ManagerService.isStatusNotificationEnabled()
+              "verbose-log" -> ManagerService.isVerboseLogEnabled()
               else -> throw IllegalArgumentException("Unknown config key: $key")
             }
         mapOf("KEY" to key, "VALUE" to value)
@@ -186,8 +198,8 @@ object CliHandler {
                 ?: throw IllegalArgumentException("Value must be 'true' or 'false'.")
 
         when (key) {
-          "status-notification" -> ManagerService.setEnableStatusNotification(value)
-          "verbose-log" -> ManagerService.setVerboseLog(value)
+          "status-notification" -> ManagerService.setStatusNotificationEnabled(value)
+          "verbose-log" -> ManagerService.setVerboseLogEnabled(value)
           else -> throw IllegalArgumentException("Unknown config key: $key")
         }
         "Successfully set $key to $value."
@@ -209,7 +221,7 @@ object CliHandler {
         if (dbFile.exists()) dbFile.delete()
 
         // VACUUM INTO creates a consistent, defragmented copy without long-term locking.
-        ConfigCache.dbHelper.writableDatabase.execSQL("VACUUM INTO '$path'")
+        ModuleDatabase.dbHelper.writableDatabase.execSQL("VACUUM INTO '$path'")
         "Database backed up successfully to: $path"
       }
       "restore" -> {
@@ -220,8 +232,8 @@ object CliHandler {
         val sourceFile = File(path)
         if (!sourceFile.exists()) throw FileNotFoundException("Source file does not exist: $path")
 
-        val currentDbPath = ConfigCache.dbHelper.readableDatabase.path
-        ConfigCache.dbHelper.close()
+        val currentDbPath = ModuleDatabase.dbHelper.readableDatabase.path
+        ModuleDatabase.dbHelper.close()
         sourceFile.copyTo(File(currentDbPath), overwrite = true)
 
         ConfigCache.requestCacheUpdate()
@@ -232,8 +244,8 @@ object CliHandler {
         "Database restored from $path. Daemon state is being refreshed."
       }
       "reset" -> {
-        val currentDbPath = ConfigCache.dbHelper.readableDatabase.path
-        ConfigCache.dbHelper.close()
+        val currentDbPath = ModuleDatabase.dbHelper.readableDatabase.path
+        ModuleDatabase.dbHelper.close()
 
         val dbFile = File(currentDbPath)
         val walFile = File("$currentDbPath-wal")
@@ -259,7 +271,7 @@ object CliHandler {
     return when (request.action) {
       "clear" -> {
         val verbose = request.options["verbose"] as? Boolean ?: false
-        ManagerService.clearLogs(verbose)
+        ManagerService.startNewLogPart(verbose)
         "Logs cleared successfully."
       }
       // "stream" is handled in SystemServerService.kt to attach the FileDescriptor
