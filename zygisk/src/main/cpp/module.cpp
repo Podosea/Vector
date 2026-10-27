@@ -35,13 +35,11 @@ constexpr int PER_USER_RANGE = 100000;
 // Defined via CMake generated macros. The package names arrive as bare preprocessor tokens
 // (`-DINJECTED_PACKAGE_NAME=com.android.shell`) because carrying quotes through gradle → cmake →
 // ninja → clang breaks on Windows (the MSVC argv parser eats the embedded quotes and the value
-// degrades to a multi-character constant). The two-level indirection below re-stringifies the
-// expansion instead, which is platform-independent.
-#define STR_INNER(x) #x
-#define STR(x) STR_INNER(x)
+// degrades to a multi-character constant). Same treatment as kVersionName in common/config.h:
+// VECTOR_STRINGIFY re-stringifies the expansion, which is platform-independent.
 constexpr uid_t kHostPackageUid = INJECTED_PACKAGE_UID;
-const char *const kHostPackageName = STR(INJECTED_PACKAGE_NAME);
-const char *const kManagerPackageName = STR(MANAGER_PACKAGE_NAME);
+const char *const kHostPackageName = VECTOR_STRINGIFY(INJECTED_PACKAGE_NAME);
+const char *const kManagerPackageName = VECTOR_STRINGIFY(MANAGER_PACKAGE_NAME);
 constexpr uid_t GID_INET = 3003;  // Android's Internet group ID.
 
 enum RuntimeFlags : uint32_t {
@@ -280,7 +278,7 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
                 env_->SetIntArrayRegion(args->gids, 0, 1, &inet_gid);
             }
 
-            args->nice_name = env_->NewStringUTF(STR(INJECTED_PACKAGE_NAME));
+            args->nice_name = env_->NewStringUTF(VECTOR_STRINGIFY(INJECTED_PACKAGE_NAME));
             args->gids = new_gids;
         }
     }
