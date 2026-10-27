@@ -105,17 +105,24 @@ object BridgeService {
                 Action.GET_BINDER -> {
                     val processName = data.readString()
                     val heartBeat = data.readStrongBinder()
+                    // The daemon appends its per-process native API decision (NativeApiPolicy wire
+                    // values) as an out param; forward it to the specializing process in the same
+                    // reply. A peer older than the field reads nothing extra, and this side never
+                    // talks to a daemon older than itself (both ship in one zip).
+                    val nativeApiMode = IntArray(1)
                     val appService =
                         service?.attachProcess(
                             Binder.getCallingUid(),
                             Binder.getCallingPid(),
                             processName,
                             heartBeat,
+                            nativeApiMode,
                         )
 
                     if (appService != null && reply != null) {
                         reply.writeNoException()
                         reply.writeStrongBinder(appService.asBinder())
+                        reply.writeInt(nativeApiMode[0])
                         true
                     } else false
                 }

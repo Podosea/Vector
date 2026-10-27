@@ -34,9 +34,15 @@ interface IVectorDaemon {
      *                       and how a hot reload tells a dead target from an unreachable one. The
      *                       caller must keep a strong reference to it (the native side takes a JNI
      *                       global ref); letting it be collected looks exactly like dying.
+     * @param nativeApiMode out-only: the daemon's per-process native API decision, one of the
+     *                      wire values in the daemon's NativeApiPolicy (0 = no decision, 1 = full,
+     *                      2 = hook_only, 3 = off). Written on every return, including a null
+     *                      service - a null service means "don't inject", which makes the mode
+     *                      moot, so callers only read it after a non-null return. A one-element
+     *                      array because AIDL refuses `out` on a bare primitive.
      */
     @nullable IFrameworkService attachProcess(int uid, int pid, String processName,
-                                              IBinder processLifeToken);
+                                              IBinder processLifeToken, out int[] nativeApiMode);
 
     /** Gives the daemon system_server's ActivityThread and activity token, once they exist. */
     oneway void dispatchSystemServerContext(in IBinder activityThread, in IBinder activityToken);

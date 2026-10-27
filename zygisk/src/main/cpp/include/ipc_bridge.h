@@ -44,7 +44,8 @@ public:
      * @param nice_name The process name.
      * @return A ScopedLocalRef to the Binder object, or nullptr on failure.
      */
-    lsplant::ScopedLocalRef<jobject> RequestAppBinder(JNIEnv *env, jstring nice_name);
+    lsplant::ScopedLocalRef<jobject> RequestAppBinder(JNIEnv *env, jstring nice_name,
+                                                      int *nativeApiMode);
 
     /**
      * @brief Requests the system_server's dedicated Binder from the host service.

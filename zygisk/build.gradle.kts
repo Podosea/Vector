@@ -43,9 +43,12 @@ android {
 
         val flags =
             listOf(
-                "-DINJECTED_PACKAGE_NAME='\"${injectedPackageName}\"'",
+                // Bare tokens on purpose: the string quoting happens in module.cpp via the STR()
+                // indirection, because embedded quotes in -D flags do not survive the Windows
+                // argv chain (see the comment in module.cpp).
+                "-DINJECTED_PACKAGE_NAME=${injectedPackageName}",
                 "-DINJECTED_PACKAGE_UID=${injectedPackageUid}",
-                "-DMANAGER_PACKAGE_NAME='\"${defaultManagerPackageName}\"'",
+                "-DMANAGER_PACKAGE_NAME=${defaultManagerPackageName}",
             )
 
         externalNativeBuild {

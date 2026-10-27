@@ -32,10 +32,16 @@ constexpr int SHARED_RELRO_UID = 1037;
 // Android uses this to separate users. UID = AppID + UserID * 10000.
 constexpr int PER_USER_RANGE = 100000;
 
-// Defined via CMake generated marcos
+// Defined via CMake generated macros. The package names arrive as bare preprocessor tokens
+// (`-DINJECTED_PACKAGE_NAME=com.android.shell`) because carrying quotes through gradle → cmake →
+// ninja → clang breaks on Windows (the MSVC argv parser eats the embedded quotes and the value
+// degrades to a multi-character constant). The two-level indirection below re-stringifies the
+// expansion instead, which is platform-independent.
+#define STR_INNER(x) #x
+#define STR(x) STR_INNER(x)
 constexpr uid_t kHostPackageUid = INJECTED_PACKAGE_UID;
-const char *const kHostPackageName = INJECTED_PACKAGE_NAME;
-const char *const kManagerPackageName = MANAGER_PACKAGE_NAME;
+const char *const kHostPackageName = STR(INJECTED_PACKAGE_NAME);
+const char *const kManagerPackageName = STR(MANAGER_PACKAGE_NAME);
 constexpr uid_t GID_INET = 3003;  // Android's Internet group ID.
 
 enum RuntimeFlags : uint32_t {
@@ -274,7 +280,7 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
                 env_->SetIntArrayRegion(args->gids, 0, 1, &inet_gid);
             }
 
-            args->nice_name = env_->NewStringUTF(INJECTED_PACKAGE_NAME);
+            args->nice_name = env_->NewStringUTF(STR(INJECTED_PACKAGE_NAME));
             args->gids = new_gids;
         }
     }
@@ -327,7 +333,10 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
     LOGD("Asking the daemon about '{}'.", nice_name_str.get());
 
     auto &ipc_bridge = IPCBridge::GetInstance();
-    auto binder = ipc_bridge.RequestAppBinder(env_, args->nice_name);
+    // The daemon's per-process native API decision rides on the GET_BINDER reply; stash it before
+    // the framework dex (and therefore any module) can run, so RegisterNativeLib sees it.
+    int nativeApiMode = 0;
+    auto binder = ipc_bridge.RequestAppBinder(env_, args->nice_name, &nativeApiMode);
     if (!binder) {
         // Usually because nothing has it in scope, but the daemon may also not be up yet or have
         // registered this process already. Only it knows which, and it logs the reason itself.
@@ -335,6 +344,7 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
         SetAllowUnload(true);
         return;
     }
+    vector::native::SetDeliveredMode(nativeApiMode);
 
     // Fetch resources from the manager service.
     auto [dex_fd, dex_size] = ipc_bridge.FetchFrameworkDex(env_, binder.get());

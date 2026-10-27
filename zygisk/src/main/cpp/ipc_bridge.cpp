@@ -229,7 +229,8 @@ void IPCBridge::Initialize(JNIEnv *env) {
     initialized_ = true;
 }
 
-lsplant::ScopedLocalRef<jobject> IPCBridge::RequestAppBinder(JNIEnv *env, jstring nice_name) {
+lsplant::ScopedLocalRef<jobject> IPCBridge::RequestAppBinder(JNIEnv *env, jstring nice_name,
+                                                             int *nativeApiMode) {
     if (!initialized_) {
         LOGE("RequestAppBinder failed: IPCBridge not initialized.");
         return {env, nullptr};
@@ -284,6 +285,13 @@ lsplant::ScopedLocalRef<jobject> IPCBridge::RequestAppBinder(JNIEnv *env, jstrin
             result_binder =
                 lsplant::JNI_CallObjectMethod(env, parcels.reply.get(), read_strong_binder_method_);
             if (result_binder) {
+                // The daemon appends the per-process native API mode (NativeApiPolicy) after the
+                // binder. readInt on an exhausted parcel answers 0, which is the "undecided"
+                // wire value, so a peer that predates the field degrades to the prop fallback.
+                if (nativeApiMode) {
+                    *nativeApiMode = lsplant::JNI_CallIntMethod(env, parcels.reply.get(),
+                                                                read_int_method_);
+                }
                 // IMPORTANT: Keep the heartbeat binder alive by making it a global ref.
                 // If we don't do this, it gets garbage collected and the remote service
                 // thinks our process has died.

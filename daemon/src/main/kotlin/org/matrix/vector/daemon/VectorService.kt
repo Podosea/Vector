@@ -20,6 +20,7 @@ import org.matrix.vector.ipc.IVectorDaemon
 import org.matrix.vector.ipc.IFrameworkService
 import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.ModuleDatabase
+import org.matrix.vector.daemon.data.NativeApiPolicy
 import org.matrix.vector.daemon.data.PreferenceStore
 import org.matrix.vector.daemon.data.ProcessScope
 import org.matrix.vector.daemon.ipc.FrameworkService
@@ -69,8 +70,13 @@ object VectorService : IVectorDaemon.Stub() {
       uid: Int,
       pid: Int,
       processName: String,
-      heartBeat: IBinder
+      heartBeat: IBinder,
+      nativeApiMode: IntArray
   ): IFrameworkService? {
+    // Written on every return path (the AIDL out param marshals regardless of the return value);
+    // only a non-null service makes the caller read it, but leaving it undecided is the honest
+    // value for a process that will not be injected.
+    nativeApiMode[0] = NativeApiPolicy.MODE_UNDECIDED
     if (Binder.getCallingUid() != 1000) {
       Log.w(TAG, "Unauthorized attachProcess call")
       return null
@@ -85,6 +91,8 @@ object VectorService : IVectorDaemon.Stub() {
     }
 
     return if (FrameworkService.registerHeartBeat(uid, pid, processName, heartBeat)) {
+      nativeApiMode[0] = NativeApiPolicy.modeFor(processName)
+      Log.d(TAG, "Native API mode for '$processName': ${nativeApiMode[0]}")
       FrameworkService
     } else null
   }
